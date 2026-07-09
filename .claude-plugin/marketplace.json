@@ -1,0 +1,18 @@
+{
+  "name": "ambient",
+  "owner": {
+    "name": "AmbientCrypto",
+    "email": "hello@ambient.xyz"
+  },
+  "description": "Ambient decentralized-inference integration for Claude Code.",
+  "plugins": [
+    {
+      "name": "ambient-code",
+      "source": "./",
+      "description": "Access frontier open-source models like GLM and Kimi K2 from Claude Code, over the Ambient (ambient.xyz) decentralized inference network \u2014 a /ambient control panel, second-opinion audits, and delegate mode where Ambient writes under Claude's review.",
+      "category": "productivity",
+      "license": "MIT",
+      "homepage": "https://github.com/AmbientCrypto/ambient-code"
+    }
+  ]
+}

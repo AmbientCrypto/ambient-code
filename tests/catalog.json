@@ -1,0 +1,539 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "zai-org/GLM-5.1-FP8",
+   "name": "GLM 5.1",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 202752,
+   "max_output_length": 131072,
+   "pricing": {
+    "input": 1.4,
+    "output": 4.4,
+    "prompt": "0.0000014",
+    "completion": "0.0000044",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning"
+   ],
+   "description": null,
+   "is_ready": false
+  },
+  {
+   "id": "z-ai/glm-5.2",
+   "name": "GLM 5.2",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 202752,
+   "max_output_length": 202752,
+   "pricing": {
+    "input": 0.96,
+    "output": 3.06,
+    "prompt": "0.00000096",
+    "completion": "0.00000306",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.000000179",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Z.ai GLM-5.2.",
+   "is_ready": true
+  },
+  {
+   "id": "z-ai/glm-4.5-air",
+   "name": "GLM 4.5 Air",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 131072,
+   "max_output_length": 131072,
+   "pricing": {
+    "input": 0.125,
+    "output": 0.85,
+    "prompt": "0.000000125",
+    "completion": "0.00000085",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000006",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Z.ai GLM-4.5-Air.",
+   "is_ready": false
+  },
+  {
+   "id": "google/gemma-4-26b-a4b-it",
+   "name": "Gemma 4 26B A4B",
+   "input_modalities": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.1,
+    "output": 0.3,
+    "prompt": "0.0000001",
+    "completion": "0.0000003",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000002",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Google Gemma 4 26B A4B.",
+   "is_ready": false
+  },
+  {
+   "id": "google/gemma-4-31b-it",
+   "name": "Gemma 4 31B",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 65536,
+   "max_output_length": 16384,
+   "pricing": {
+    "input": 0.2,
+    "output": 0.8,
+    "prompt": "0.0000002",
+    "completion": "0.0000008",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.000000065",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Google Gemma 4 31B.",
+   "is_ready": false
+  },
+  {
+   "id": "openai/gpt-oss-120b",
+   "name": "gpt-oss-120b",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 131072,
+   "max_output_length": 131072,
+   "pricing": {
+    "input": 0.15,
+    "output": 0.6,
+    "prompt": "0.00000015",
+    "completion": "0.0000006",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.000000075",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "OpenAI gpt-oss-120b.",
+   "is_ready": false
+  },
+  {
+   "id": "openai/gpt-oss-20b",
+   "name": "gpt-oss-20b",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 131072,
+   "max_output_length": 131072,
+   "pricing": {
+    "input": 0.029,
+    "output": 0.14,
+    "prompt": "0.000000029",
+    "completion": "0.00000014",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning"
+   ],
+   "description": "OpenAI gpt-oss-20b.",
+   "is_ready": false
+  },
+  {
+   "id": "moonshotai/kimi-k2.5",
+   "name": "Kimi K2.5",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.4,
+    "output": 1.98,
+    "prompt": "0.0000004",
+    "completion": "0.00000198",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000005",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "MoonshotAI Kimi K2.5.",
+   "is_ready": false
+  },
+  {
+   "id": "moonshotai/kimi-k2.6",
+   "name": "Kimi K2.6",
+   "input_modalities": [
+    "text",
+    "image"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.55,
+    "output": 3.2,
+    "prompt": "0.00000055",
+    "completion": "0.0000032",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000011",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "MoonshotAI Kimi K2.6.",
+   "is_ready": false
+  },
+  {
+   "id": "moonshotai/kimi-k2.7-code",
+   "name": "Kimi K2.7 Code",
+   "input_modalities": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.88,
+    "output": 3.81,
+    "prompt": "0.00000088",
+    "completion": "0.00000381",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000017",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "MoonshotAI Kimi K2.7 Code.",
+   "is_ready": true
+  },
+  {
+   "id": "nvidia/nemotron-3-nano-30b-a3b",
+   "name": "Nemotron 3 Nano 30B A3B",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 228000,
+   "pricing": {
+    "input": 0.05,
+    "output": 0.2,
+    "prompt": "0.00000005",
+    "completion": "0.0000002",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000001",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "reasoning"
+   ],
+   "description": "NVIDIA Nemotron 3 Nano 30B A3B.",
+   "is_ready": false
+  },
+  {
+   "id": "qwen/qwen3-coder-30b-a3b-instruct",
+   "name": "Qwen3 Coder 30B A3B Instruct",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 160000,
+   "max_output_length": 32768,
+   "pricing": {
+    "input": 0.07,
+    "output": 0.27,
+    "prompt": "0.00000007",
+    "completion": "0.00000027",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs"
+   ],
+   "description": "Qwen3 Coder 30B A3B Instruct.",
+   "is_ready": false
+  },
+  {
+   "id": "qwen/qwen3-next-80b-a3b-instruct",
+   "name": "Qwen3 Next 80B A3B Instruct",
+   "input_modalities": [
+    "text"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.09,
+    "output": 1.1,
+    "prompt": "0.00000009",
+    "completion": "0.0000011",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000003",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "logprobs"
+   ],
+   "description": "Qwen3 Next 80B A3B Instruct.",
+   "is_ready": false
+  },
+  {
+   "id": "qwen/qwen3.5-35b-a3b",
+   "name": "Qwen3.5 35B A3B",
+   "input_modalities": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.14,
+    "output": 1.0,
+    "prompt": "0.00000014",
+    "completion": "0.000001",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000005",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Qwen3.5 35B A3B.",
+   "is_ready": false
+  },
+  {
+   "id": "qwen/qwen3.6-27b",
+   "name": "Qwen3.6 27B",
+   "input_modalities": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 81920,
+   "pricing": {
+    "input": 0.32,
+    "output": 3.2,
+    "prompt": "0.00000032",
+    "completion": "0.0000032",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000016",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Qwen3.6 27B.",
+   "is_ready": false
+  },
+  {
+   "id": "qwen/qwen3.6-35b-a3b",
+   "name": "Qwen3.6 35B A3B",
+   "input_modalities": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.15,
+    "output": 1.0,
+    "prompt": "0.00000015",
+    "completion": "0.000001",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000005",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "Qwen3.6 35B A3B.",
+   "is_ready": false
+  },
+  {
+   "id": "ambient/large",
+   "name": "Kimi K2.7 Code",
+   "input_modalities": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output_modalities": [
+    "text"
+   ],
+   "context_length": 262144,
+   "max_output_length": 262144,
+   "pricing": {
+    "input": 0.88,
+    "output": 3.81,
+    "prompt": "0.00000088",
+    "completion": "0.00000381",
+    "image": "0",
+    "request": "0",
+    "input_cache_read": "0.00000017",
+    "input_cache_write": "0"
+   },
+   "supported_features": [
+    "tools",
+    "json_mode",
+    "structured_outputs",
+    "reasoning",
+    "logprobs"
+   ],
+   "description": "MoonshotAI Kimi K2.7 Code.",
+   "is_ready": true
+  }
+ ],
+ "has_more": false
+}

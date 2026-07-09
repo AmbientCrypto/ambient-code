@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "ambient-code",
+  "displayName": "Ambient Code",
+  "version": "1.0.0",
+  "description": "Access frontier open-source models \u2014 GLM, Kimi K2, Qwen, and more \u2014 from inside Claude Code, over the Ambient (ambient.xyz) decentralized inference network. Adds a /ambient control panel with a sticky model picker, second-opinion code audits that Claude cross-checks, native `ambient build` file generation, and a delegate mode where Ambient writes the token-heavy code under Claude's review.",
+  "author": {
+    "name": "AmbientCrypto",
+    "email": "hello@ambient.xyz"
+  },
+  "homepage": "https://github.com/AmbientCrypto/ambient-code",
+  "repository": "https://github.com/AmbientCrypto/ambient-code",
+  "license": "MIT",
+  "keywords": [
+    "ambient",
+    "decentralized-ai",
+    "inference",
+    "second-opinion",
+    "code-audit",
+    "multi-model",
+    "openai-compatible"
+  ]
+}

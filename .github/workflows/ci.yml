@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.8", "3.10", "3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile check (stdlib only — no deps)
+        run: python -m py_compile bin/ambient
+      - name: Import on this platform (guards the Windows/fcntl path indirectly)
+        run: python -c "import importlib.machinery as m; m.SourceFileLoader('a','bin/ambient').load_module()"
+      - name: Unit tests (hermetic, no network)
+        run: python -m unittest discover -s tests -v
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version tri-sync (bin/ambient == plugin.json == pyproject.toml)
+        run: |
+          python3 - <<'PY'
+          import json, re, sys
+          pj = json.load(open(".claude-plugin/plugin.json"))["version"]
+          py = re.search(r'version\s*=\s*"([^"]+)"', open("pyproject.toml").read()).group(1)
+          amb = re.search(r'__version__ = "([^"]+)"', open("bin/ambient").read()).group(1)
+          if not (pj == py == amb):
+              sys.exit(f"version drift: plugin.json={pj} pyproject={py} cli={amb}")
+          print(f"version {pj} in sync")
+          PY
+      - name: Manifests parse
+        run: |
+          python3 -c "import json; json.load(open('.claude-plugin/plugin.json')); json.load(open('.claude-plugin/marketplace.json')); json.load(open('hooks/hooks.json'))"
+      - name: Hook scripts are executable + parse
+        run: |
+          test -x hooks/session-start.sh
+          bash -n hooks/session-start.sh
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ruff (gate)
+        run: |
+          pip install ruff
+          ruff check bin/ambient tests/ tools/

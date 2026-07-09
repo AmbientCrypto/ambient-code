@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# build / packaging artifacts
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# never commit local config or secrets
+.env
+.config/
+*.key
+.ruff_cache/
+docs/plans/
+docs/EXECUTION_PLAN.md
+docs/OFFICIAL_ROADMAP.md

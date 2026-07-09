@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ambient-code"
+version = "1.0.0"                       # keep in sync with .claude-plugin/plugin.json + bin/ambient __version__
+description = "A second pair of eyes for Claude Code, on the Ambient decentralized inference network"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["ambient", "llm", "code-review", "claude-code", "inference"]
+dependencies = []                       # stdlib only — no third-party runtime deps
+
+[project.urls]
+Homepage = "https://github.com/AmbientCrypto/ambient-code"
+
+# Single-file CLI: install bin/ambient onto PATH as `ambient` with NO second copy
+# of the source (avoids the two-divergent-copies problem). `pipx install .` works.
+[tool.setuptools]
+script-files = ["bin/ambient"]
+packages = []                           # no importable packages — disable auto-discovery
+py-modules = []
+
+[tool.pytest.ini_options]
+# Canonical runner is `python3 -m unittest discover -s tests`; this only lets
+# `pytest tests/` collect despite the sibling-module imports (tests/ is a pkg).
+pythonpath = ["tests"]
