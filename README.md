@@ -1,7 +1,7 @@
 # ambient-code — Claude Code plugin for the Ambient network
 
 > **Beta — early access.** `ambient-code` is open-source (MIT) and under active
-> development: expect rough edges and the occasional bug, and please
+> development: please
 > [report issues](https://github.com/AmbientCrypto/ambient-code/issues). It
 > connects Claude Code to [Ambient](https://ambient.xyz)'s public API.
 
