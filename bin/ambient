@@ -92,12 +92,16 @@ try:
 except ImportError:
     fcntl = None
 
-__version__ = "1.0.0"  # kept in sync with plugin.json + pyproject.toml (test- and CI-asserted)
+__version__ = "1.1.0"  # kept in sync with plugin.json + pyproject.toml (test- and CI-asserted)
 CONFIG_PATH = os.path.expanduser("~/.config/ambient/env")
 USAGE_PATH = os.path.expanduser("~/.config/ambient/usage.jsonl")
 KEYCHAIN_SERVICE = "ambient.xyz"
 KEYCHAIN_ACCOUNT = "api-key"
 DEFAULT_API_URL = "https://api.ambient.xyz"
+# The endpoint the current process resolved (set once by resolve_api_url). Folded
+# into every response-cache key so a cached answer from one gateway is never served
+# after AMBIENT_API_URL is repointed at a different one (#5). Per-run constant.
+_ACTIVE_ENDPOINT = None
 KEY_CONSOLE_URL = "https://app.ambient.xyz"   # where users create/manage API keys
 SUPPORT_LINE = ("If this keeps happening, contact Ambient support with the "
                 "[category] code shown above — support/community links at "
@@ -492,6 +496,12 @@ def _is_local_host(host):
 def resolve_api_url(conf):
     from_env = os.environ.get("AMBIENT_API_URL")
     api_url = (from_env or conf.get("AMBIENT_API_URL") or DEFAULT_API_URL).rstrip("/")
+    # Namespace the response cache by the resolved endpoint (#5). Set before the
+    # host-pinning checks below because a rejected URL exits the process (so no
+    # cache op ever runs with an unvalidated value), and every success path returns
+    # exactly this api_url.
+    global _ACTIVE_ENDPOINT
+    _ACTIVE_ENDPOINT = api_url
     parts = urllib.parse.urlsplit(api_url)
     host = (parts.hostname or "").lower()
     # AMBIENT_ALLOW_INSECURE relaxes the HTTPS requirement ONLY for a LOCAL host
@@ -882,6 +892,13 @@ def save_config_values(updates):
                 lines = fh.read().splitlines()
         except FileNotFoundError:
             pass
+        except UnicodeDecodeError:
+            # A corrupt (non-UTF-8) config: reads tolerate it, but a blind rewrite here
+            # would DESTROY whatever is there. Refuse instead — never rewrite corrupt data.
+            sys.exit(f"ambient: {CONFIG_PATH} is not valid UTF-8 — fix or remove it, then "
+                     "retry (refusing to rewrite it and risk losing data).")
+        except OSError as err:
+            sys.exit(f"ambient: cannot read {CONFIG_PATH}: {err}")
         if callable(updates):
             conf_now = {}
             for line in lines:
@@ -1467,7 +1484,7 @@ def _try_caps_lock(conf_dir):
     store, so a telemetry write never hangs. Returns an fd on success, else None
     (caller proceeds unlocked). Where fcntl is absent (Windows) we do NOT use an
     O_EXCL lock file — its unlink-on-release races with a concurrent holder
-    (Codex round 4) — and simply run unlocked; capability learning is
+    — and simply run unlocked; capability learning is
     best-effort and a rare lost outcome self-heals."""
     if fcntl is None:
         return None
@@ -1515,7 +1532,7 @@ def record_cap(model, dim, ok):
         conf_dir = os.path.dirname(CAPABILITY_PATH)
         os.makedirs(conf_dir, exist_ok=True)
         # NON-BLOCKING lock: a telemetry write must NEVER hang the real result a
-        # caller is waiting on (Codex round 2: the blocking config lock could
+        # caller is waiting on (the blocking config lock could
         # stall record_cap). If a sibling holds it, we skip the lock and do a
         # best-effort read-modify-write — at worst one outcome races, never a
         # hang. Re-read fresh from disk so a held lock's writer isn't clobbered
@@ -1571,7 +1588,7 @@ def downgrade_response_format(rf, profile):
 def _served_model_of(meta, default):
     """The model that actually served a completion, from its metadata — or
     `default`. Guards a malformed/non-dict `meta` and a non-string served id
-    (Codex round 2: a bogus _b could crash or record under a junk key)."""
+    (a bogus _b could crash or record under a junk key)."""
     if isinstance(meta, dict):
         served = meta.get("_served_model")
         if isinstance(served, str) and served:
@@ -1583,7 +1600,7 @@ def build_plan_rf_ladder(model, profile):
     """Ordered, de-duplicated response_format rungs to try for a build plan:
     the adaptive first choice, then each strictly-looser fallback, ending in
     prompt-only (None). A capable strict+json model gets json_schema ->
-    json_object -> None (Codex: the old 2-entry ladder skipped prompt-only); a
+    json_object -> None (the old 2-entry ladder skipped prompt-only); a
     learned-unreliable model goes straight to prompt-only. Always >= 2 entries
     so the reminder-retry still fires."""
     def _t(rf):
@@ -1963,6 +1980,18 @@ def _reservations_path():
     return os.path.join(os.path.dirname(USAGE_PATH), "reservations.jsonl")
 
 
+# Absolute upper bound on a reservation's age. This ONLY reclaims a reservation whose
+# pid still reads ALIVE (a dead pid is reclaimed immediately by the liveness check) — its
+# sole job is to bound POSIX pid REUSE pinning a crashed job's spend forever. A single
+# `ambient` process can legitimately run for hours (a large `map` batch, or a build with
+# AMBIENT_HARD_WALL_S raised well past 90 min), so the cap is deliberately GENEROUS: no
+# realistic single run reaches it, while a reused-pid stale reservation still clears within
+# a day. Erring long is the safe side — pruning a live holder too early risks fleet
+# OVERSPEND (real money), whereas keeping a stale one merely over-restricts (recoverable
+# with --allow-cost).
+_MAX_RESERVATION_AGE_S = 24 * 3600
+
+
 def _load_reservations(path, ttl, now):
     """Parse + prune the reservations store. Returns (records, saw_corrupt).
     Pruning is LIVENESS-FIRST: a provably-ALIVE pid is KEPT no
@@ -2000,6 +2029,9 @@ def _load_reservations(path, ttl, now):
         alive = _pid_alive(pid)
         if alive is False:
             continue  # definitively dead process — reclaim immediately
+        if now - ts > _MAX_RESERVATION_AGE_S:
+            continue  # bound PID-reuse: no gated call runs this long, so an ancient
+                      # reservation is stale even if a (possibly reused) pid reads alive
         if alive is not True and now - ts > ttl:
             continue  # unknowable liveness AND expired — presumed abandoned
         records.append({"pid": pid, "ts": ts, "amount": amount, "id": rid})
@@ -2156,20 +2188,26 @@ def cost_gate(catalog, model, input_chars, n_calls, args, conf,
 
 def _ceiling(conf):
     """(effective ceiling, user_set): the spend cap and whether the USER set it.
-    Default is a silent safety cap. NO dollar figure is ever surfaced (founder
-    policy: billing is plan-dependent, so any dollar number misleads); user_set
+    Default is a silent safety cap. NO dollar figure is ever surfaced (billing is plan-dependent, so any
+    dollar number misleads); user_set
     only changes whether a refusal names AMBIENT_MAX_SPEND as the user's own."""
     raw = os.environ.get("AMBIENT_MAX_SPEND") or conf.get("AMBIENT_MAX_SPEND")
     try:
-        return (float(raw) if raw else 5.0), bool(raw)
-    except ValueError:
+        v = float(raw) if raw else 5.0
+    except (ValueError, TypeError):
         return 5.0, False
+    # Reject NaN/inf/<=0: `expected > nan` is ALWAYS False, which would silently DISABLE
+    # the spend cap. Fall back to the safe default (keep user_set so a refusal can still
+    # name AMBIENT_MAX_SPEND as the user's own bad value).
+    if v != v or v in (float("inf"), float("-inf")) or v <= 0:
+        return 5.0, bool(raw)
+    return v, bool(raw)
 
 
 def _gate_amount(expected, args, conf, bound=None):
     """Enforce the spend ceiling on the expected figure, plus a worst-case guard
     at 3x. The ceiling is a SILENT safety cap; NO dollar figure is ever printed
-    (founder policy) — a refusal names AMBIENT_MAX_SPEND but never a computed
+    — a refusal names AMBIENT_MAX_SPEND but never a computed
     cost. The bound over-states 10-30x, so the ceiling binds EXPECTED spend."""
     ceiling, user_set = _ceiling(conf)
     allow = getattr(args, "allow_cost", False)
@@ -2953,20 +2991,23 @@ def model_profile(catalog, model):
     cpt = _effective_cpt(model)
     meta = next((m for m in (catalog or [])
                  if isinstance(m, dict) and m.get("id") == model), None)
+    declared_ctx = None
     if meta is None:
         ctx, max_out, feats = FALLBACK_CONTEXT, FALLBACK_MAX_OUTPUT, ["reasoning"]
     else:
         # Coerce untrusted catalog types — a string "202752" or junk must
         # degrade to the fallback, never TypeError every command.
-        # Only substitute the fallback when the field is absent/invalid — a
-        # real but small cap (e.g. 1024) is respected, not inflated past the
-        # API limit.
-        ctx = _as_pos_int(meta.get("context_length"), FALLBACK_CONTEXT)
+        declared_ctx = _as_pos_int(meta.get("context_length"), None)
+        ctx = declared_ctx if declared_ctx is not None else FALLBACK_CONTEXT
         max_out = _as_pos_int(meta.get("max_output_length"), FALLBACK_MAX_OUTPUT)
         raw_feats = meta.get("supported_features")
         feats = [f for f in raw_feats if isinstance(f, str)] \
             if isinstance(raw_feats, list) else []
-    ctx = max(ctx, 4000)  # keep the math sane on absurd metadata
+    # Floor ONLY an absent/invalid window (keep the chunk math sane on missing metadata);
+    # a real DECLARED window — even a small one like 1024 — is respected, NEVER inflated
+    # past the API limit (which would produce requests the model rejects).
+    if declared_ctx is None:
+        ctx = max(ctx, 4000)
     # The literal catalog signal: only a MISSING entry assumes reasoning; a
     # present entry without the flag (qwen3-coder/next) is a real non-reasoner.
     is_reasoning = "reasoning" in feats
@@ -3061,6 +3102,11 @@ def _resolve_output_budget(max_tokens, profile, input_chars=None):
     # The floor must never exceed the model's real output cap (a
     # 500-token-cap model must not be forced up to the 2048 floor).
     floor = min(MIN_OUTPUT_TOKENS, profile.max_output_length)
+    # ...and it must also FIT the context: on a genuinely tiny declared window,
+    # honoring MIN_OUTPUT_TOKENS would push input+output past the context (a request
+    # the model rejects). Context wins — clamp the floor to what actually fits.
+    # (Exposed once a small DECLARED window is no longer inflated to 4000; P0 #8.)
+    floor = min(floor, max(1, context_safe))
     resolved = max(floor,
                    min(max_tokens, profile.max_output_length,
                        max(1, context_safe)))
@@ -3249,7 +3295,7 @@ _PRECISE_SECRET_PATTERNS = SECRET_PATTERNS[1:]
 # The loose labeled pattern also matches a labeled assignment whose UNQUOTED
 # value is a code EXPRESSION — a function call ('password = getPasswordFromEnv()')
 # or a dotted reference ('token = req.headers.authorization') — normal source
-# that must NOT be refused (Codex round 12 structural false positive). A quoted
+# that must NOT be refused (a structural false positive). A quoted
 # value is a literal and is NOT cleared by this (no quote in the pattern).
 _LOOSE_CODE_VALUE_RE = re.compile(
     r"(?i)(?:api[_-]?key|secret|passwd|password|token)\s*[:=]\s*"
@@ -3268,7 +3314,7 @@ _LOOSE_TYPE_VALUE_RE = re.compile(
 # on minified/hex blobs). _line_has_secret gates it on
 # the literal '://' and scans only a bounded window around each occurrence.
 # Credentials embedded in a URL: scheme://[user]:password@host. The username may
-# be EMPTY (redis://:password@host is common — Codex round 9).
+# be EMPTY (redis://:password@host is common).
 # Password in a URL — but the credential must not be a template PLACEHOLDER
 # ('{password}', '${password}'): an f-string / templated DSN is not a leak
 # (Workflow false positive). '{', '}', '$' excluded from the password run.
@@ -3293,7 +3339,7 @@ CREDS_IN_URL_RE = re.compile(r"[a-z][a-z0-9+.\-]*://[^/\s:@]*:[^@\s{}$]{6,}@")
 # 3 = value quote (or ''), 4 = value.
 # The identifier may use '_' (env), '-' (kebab/K8s/YAML: mysql-root-password),
 # or '.' (dotted properties: spring.datasource.password) as component separators
-# (Codex round 18).
+#.
 ENV_ASSIGN_RE = re.compile(
     r"(?:^|[\{,\s])(['\"]?)(?:export[ \t]+)?"
     r"([A-Za-z][A-Za-z0-9_.\-]*[A-Za-z0-9])\1?"
@@ -3301,7 +3347,7 @@ ENV_ASSIGN_RE = re.compile(
 # A credential keyword as a full component (db_password, mysql-root-password,
 # spring.datasource.password, AWS_SECRET_ACCESS_KEY) — separators '_', '-', '.' —
 # OR a camelCase token (DbPassword), but NOT buried in a longer lowercase word
-# (Tokenizer must not read as TOKEN — Codex round 3).
+# (Tokenizer must not read as TOKEN).
 _ENV_STRONG_COMPONENT_RE = re.compile(
     r"(?i)(^|[_.\-])(SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIAL|CREDENTIALS|APIKEY)"
     r"([_.\-]|$)")
@@ -3347,13 +3393,13 @@ def _env_is_strong(ident):
                 or _ENV_STRONG_CAMEL_RE.search(ident)
                 or _ENV_STRONG_SUBSTR_RE.search(ident))
 # An ambiguous *_KEY trips only when a SENSITIVE component precedes KEY (schema
-# columns like PRIMARY_KEY/FOREIGN_KEY/CACHE_KEY are NOT secrets — Codex).
+# columns like PRIMARY_KEY/FOREIGN_KEY/CACHE_KEY are NOT secrets).
 _ENV_SENSITIVE_KEY_RE = re.compile(
     r"(?i)(^|[_.\-])(ACCESS|PRIVATE|ENCRYPT|ENCRYPTION|SIGN|SIGNING|AUTH|SESSION|"
     r"CLIENT|MASTER|ROOT|APP|SERVICE)[_.\-]KEY$")
 _PUBLIC_KEY_IDENT_RE = re.compile(r"(?i)(^|[_.\-])PUBLIC[_.\-]KEY$")
 # A high-entropy key value: 20+ base64/hex chars. Pure lowercase-hex (a git SHA
-# / hash) and dashed UUIDs are excluded — they aren't credentials (Codex).
+# / hash) and dashed UUIDs are excluded — they aren't credentials.
 _ENV_HIGH_ENTROPY_RE = re.compile(r"[A-Za-z0-9+/]{20,}")
 # A password-shaped value: 8+ chars mixing at least one letter and one digit
 # ('Pa55word123'). A pure word ('postgres') or pure number is NOT password-shaped.
@@ -3376,8 +3422,7 @@ def _value_looks_nonsecret(val):
     return (val[:1].isupper() and val.isalnum() and any(c.islower() for c in val)
             and sum(c.isdigit() for c in val) <= 1)
 # A value that is a pure variable interpolation ($VAR / ${VAR} / %VAR% / #{...}
-# / $(...)) is a passthrough reference, not a literal secret (Codex round 17:
-# 'DB_PASSWORD=${DB_PASSWORD}' is weekly deployment config).
+# / $(...)) is a passthrough reference, not a literal secret ('DB_PASSWORD=${DB_PASSWORD}' is weekly deployment config).
 _ENV_INTERP_RE = re.compile(
     r"^(?:\$[A-Za-z_][A-Za-z0-9_]*"          # $VAR
     r"|\$\{\{[^}\n]*\}\}"                      # ${{ secrets.X }} (GitHub Actions)
@@ -3391,7 +3436,7 @@ _SECRET_VALUE_HINT_RE = re.compile(r"[@#$%^&*!=~]")
 _CODE_VALUE_RE = re.compile(r"[()\[\]{}]")
 # A whole line that is just `[keyword…] name = obj.attr.reference[;]` is a code
 # expression, not a credential — e.g. `password = user.password_hash` or
-# `const password = user.passwordHash;` (Codex R4/R6 false positives). Allows a
+# `const password = user.passwordHash;` (false positives). Allows a
 # declaration keyword prefix, camelCase attribute segments, and a trailing ';'.
 # Safe against JWT/base64 secrets because those are caught by the PRECISE
 # patterns before this filter runs (see _line_has_secret).
@@ -3405,7 +3450,7 @@ _CODE_REF_ASSIGN_RE = re.compile(
 # dotted reference ('X = process.env.SECRET') — is CODE, never a credential. A
 # BARE identifier value ('DB_PASSWORD=aQ7pR2xL9mZ4kT8v') and a real bracketed
 # password ('DB_PASSWORD=p(ass)w0rd!') are NOT cleared — they lack the clean
-# call/dotted-ref shape (Codex round 16).
+# call/dotted-ref shape.
 # The tail a code value may carry before end-of-line: a TS 'as Type' cast, a
 # non-null '!', an '|| default' / '?? default' fallback, a ';'/',' terminator,
 # and/or a trailing '#'/'//' comment (Workflow false positives — env reads with
@@ -3443,7 +3488,7 @@ def _env_assignment_is_secret(line):
     (`password = get_input()`, `foreign_key = other.id`) is NOT a secret. ALL
     assignments are checked — on the whole line AND on each whitespace token, so
     a prose prefix ('here is my key: AWS_SECRET_ACCESS_KEY=…') whose first match
-    greedily swallows the real assignment is still caught (Codex R5).
+    greedily swallows the real assignment is still caught.
 
     DOCUMENTED BACKSTOP BOUNDARY: a bare lowercase unquoted assignment to a
     plain DICTIONARY-WORD value (`password: postgres`) is intentionally NOT
@@ -3471,8 +3516,7 @@ def _env_assignment_is_secret(line):
                 if ident.isupper() or quoted:
                     return True
                 # A lowercase name: secret-ish punctuation ('!','@',…) marks a
-                # literal secret even with brackets (db_password: p(ass)w0rd! —
-                # Codex R5); ELSE brackets mean a code expression; else a
+                # literal secret even with brackets (db_password: p(ass)w0rd!); ELSE brackets mean a code expression; else a
                 # high-entropy base64 token (with a digit/upper) is a secret.
                 if _SECRET_VALUE_HINT_RE.search(val):
                     return True
@@ -3584,20 +3628,30 @@ USAGE_MAX_BYTES = 5_000_000  # cap the ledger; trim oldest lines past this
 USAGE_TRIM_KEEP_LINES = 20_000  # how many newest ledger lines a trim keeps
 
 
+def _parse_retry_after(ra):
+    """Retry-After as delta-seconds OR an HTTP-date -> seconds to wait (>= 0)."""
+    if not ra:
+        return 0.0
+    try:
+        return max(0.0, float(ra))
+    except (TypeError, ValueError):
+        pass
+    try:  # HTTP-date form, e.g. `Wed, 26 Aug 2026 20:00:00 GMT`
+        import email.utils
+        dt = email.utils.parsedate_to_datetime(ra)
+        return max(0.0, dt.timestamp() - time.time()) if dt else 0.0
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
 def _retry_delay(base, headers=None):
-    """Backoff with random jitter, honoring a Retry-After header (clamped to 60s)
-    when present. Jitter breaks the lockstep that makes 3 fan-out workers
-    re-hit the limiter together (thundering herd)."""
-    hint = 0.0
-    if headers is not None:
-        ra = headers.get("Retry-After")
-        if ra:
-            try:
-                hint = float(ra)
-            except (TypeError, ValueError):
-                hint = 0.0
-    delay = min(max(float(base), hint), 60.0)
-    return delay + random.uniform(0, 0.5 * delay)
+    """Backoff with random jitter, honoring a Retry-After header (delta-seconds or
+    HTTP-date) when present, clamped to 60s. Jitter breaks the lockstep that makes 3
+    fan-out workers re-hit the limiter together (thundering herd). The FINAL (jittered)
+    delay is clamped, so jitter can never push it past the advertised cap."""
+    hint = _parse_retry_after(headers.get("Retry-After") if headers is not None else None)
+    delay = max(float(base), hint)
+    return min(delay + random.uniform(0, 0.5 * delay), 60.0)
 
 
 CACHE_DIR = os.path.expanduser("~/.config/ambient/cache")
@@ -3617,6 +3671,14 @@ def _cache_key(model, system, chunk, max_tokens, temperature,
     h = hashlib.sha256()
     h.update(f"{model}\0{max_tokens}\0{temperature}\0".encode())
     h.update(json.dumps(response_format, sort_keys=True).encode())
+    # Namespace by endpoint so a cached answer isn't served across a repointed
+    # AMBIENT_API_URL (same model id + prompt, different gateway). The default
+    # endpoint folds in NOTHING, so entries written before this fix stay valid and
+    # only custom/self-hosted endpoints get their own cache lane.
+    ep = _ACTIVE_ENDPOINT
+    if ep and ep != DEFAULT_API_URL:
+        h.update(b"\0ep:")
+        h.update(ep.encode("utf-8", "replace"))
     h.update(b"\0")
     h.update(system.encode("utf-8", "replace"))
     h.update(b"\0")
@@ -3903,12 +3965,15 @@ def stream_completion(api_url, api_key, payload, timeout, on_delta=None):
             except json.JSONDecodeError:
                 return resp.status, {"error": {"message": "non-JSON response"}}
             return resp.status, body
-        terminated = False  # saw [DONE] or a finish_reason
+        terminated = False  # saw an explicit [DONE] end-marker
+        finished = False    # saw a finish_reason (generation complete)
+        finish_deadline = None  # once finished: absolute time to stop draining the tail
+        FINISH_DRAIN_S = 2.0    # grace to catch a trailing usage/[DONE] after finish
         data_lines = []  # accumulate multi-line `data:` fields of one SSE event
 
         def handle_event():
             """Process one complete SSE event (its joined data payload)."""
-            nonlocal usage, finish, terminated
+            nonlocal usage, finish, terminated, finished
             if not data_lines:
                 return
             payload_str = "\n".join(data_lines)
@@ -3947,13 +4012,17 @@ def stream_completion(api_url, api_key, payload, timeout, on_delta=None):
                         reasoning.append(_rv)
                 if ch.get("finish_reason"):
                     finish = ch["finish_reason"]
-                    terminated = True
+                    # Generation is done, but DON'T stop reading: OpenAI's
+                    # stream_options.include_usage sends a trailing usage-only chunk
+                    # (choices:[]) AFTER this, then [DONE]. Breaking here would drop
+                    # exact usage and force a local estimate. Keep draining until
+                    # [DONE]/EOF (or a brief post-finish silence) captures it.
+                    finished = True
 
         # Read lines off the socket in a BACKGROUND thread so the main loop can
         # enforce the hard-wall / no-progress limits on a fixed ~1s cadence. A
         # peer that dribbles bytes and never sends a newline can no longer make a
-        # blocking readline() own the clock and delay every limit (Codex 2026-07-08:
-        # readline(cap) still blocks until newline/EOF/timeout/full cap). The
+        # blocking readline() own the clock and delay every limit (readline(cap) still blocks until newline/EOF/timeout/full cap). The
         # queue is bounded, so the reader can't buffer the whole stream ahead.
         line_q = queue.Queue(maxsize=256)
 
@@ -3978,7 +4047,18 @@ def stream_completion(api_url, api_key, payload, timeout, on_delta=None):
                     f"generation exceeded the {HARD_WALL_S // 60}-minute hard wall",
                     "".join(content), "".join(reasoning), hard_wall=True,
                 )
-            if now - last_growth > NOPROGRESS_S:
+            if finished:
+                # Generation is DONE — we're only draining the trailing usage/[DONE].
+                # The no-progress guard must NOT fire here: SSE keepalive comments keep
+                # bytes flowing (never emptying the queue) without growing content, so it
+                # would otherwise raise a false stall on a COMPLETE stream. Stop once a
+                # short drain window elapses so a stream that never sends [DONE] still
+                # returns instead of waiting out the window forever.
+                if finish_deadline is None:
+                    finish_deadline = now + FINISH_DRAIN_S
+                if now >= finish_deadline:
+                    break
+            elif now - last_growth > NOPROGRESS_S:
                 # Nothing useful produced for the window — a stall, even if bytes
                 # (keep-alives / a newline-less dribble) keep the socket alive.
                 close_beat()
@@ -4011,6 +4091,10 @@ def stream_completion(api_url, api_key, payload, timeout, on_delta=None):
             try:
                 raw = line_q.get(timeout=1.0)
             except queue.Empty:
+                if finished:
+                    break  # generation done + a full tick of post-finish silence
+                    # (provider sent finish_reason but no [DONE]/usage tail) — the
+                    # content is complete, so stop draining rather than stall.
                 continue  # no line this tick — loop back to re-check the wall
             if isinstance(raw, BaseException):
                 close_beat()
@@ -4032,7 +4116,7 @@ def stream_completion(api_url, api_key, payload, timeout, on_delta=None):
                 # connection that just drops mid-generation is TRUNCATION, not
                 # success — route it through the stall/retry/salvage ladder.
                 handle_event()  # flush any buffered final event
-                if not terminated:
+                if not (terminated or finished):
                     close_beat()
                     raise StallError(
                         "stream closed before completion "
@@ -4261,11 +4345,27 @@ def complete(api_key, api_url, model, messages, args, _stall_retried=False,
                 on_delta=(on_delta if state.attempt_no == 0
                           and not state.stall_retried else None))
         except StallError as err:
-            # A DATA-FLOW silence may be a transient upstream hiccup → retry once fresh. A
-            # HARD-WALL hit means the generation is simply too long to finish
-            # → do NOT restart from scratch (it would re-bill and re-hit the
-            # wall); salvage immediately.
-            if not err.hard_wall and not state.stall_retried:
+            # A DATA-FLOW silence may be a transient upstream hiccup. A HARD-WALL hit
+            # means the generation is simply too long to finish → never restart (it
+            # would re-bill and re-hit the wall); salvage immediately.
+            # A SUBSTANTIAL first partial is SALVAGED rather than retried: a fresh
+            # restart would DISCARD paid output and bill the whole generation a second
+            # time against a one-attempt reservation. Only a negligible
+            # pre-stall partial is cheap enough to retry fresh.
+            # Count reasoning too: a stall that produced a large REASONING trace but
+            # little answer text is still expensive paid output — salvaging it (metered)
+            # beats a fresh restart that discards AND re-bills it.
+            substantial = len(err.partial) + len(err.reasoning or "") > 400
+            if not err.hard_wall and not state.stall_retried and not substantial:
+                # Meter whatever the stalled attempt DID produce before discarding it,
+                # so a retry never makes the ledger/receipt under-count the paid partial.
+                if err.partial or err.reasoning:
+                    in_tok = int(sum(len(m.get("content") or "") for m in messages)
+                                 / CHARS_PER_TOKEN)
+                    out_tok = int((len(err.partial) + len(err.reasoning or ""))
+                                  / CHARS_PER_TOKEN)
+                    log_usage(model, {"prompt_tokens": in_tok,
+                                      "completion_tokens": out_tok, "_estimated": True})
                 print(
                     f"ambient: {err} — retrying once on a fresh connection "
                     "(same model)",
@@ -4275,16 +4375,21 @@ def complete(api_key, api_url, model, messages, args, _stall_retried=False,
                     state, stall_retried=True,
                     attempt_no=state.attempt_no + 1)
                 continue
-            if len(err.partial) > 400:
+            if substantial:
                 why = "hit the time wall" if err.hard_wall else "stalled"
                 print(
                     f"ambient: generation {why} — salvaging the partial output "
                     "already generated (marked incomplete)",
                     file=sys.stderr,
                 )
+                # Prefer the answer text; if the stall was REASONING-ONLY, surface the
+                # reasoning as a labeled draft rather than an empty note.
+                answer = err.partial or (err.reasoning or "")
+                kind = ("PARTIAL" if err.partial
+                        else "a REASONING-ONLY draft (no final answer yet)")
                 salvaged = (
-                    "[AMBIENT NOTE: the stream ended mid-generation; this output "
-                    "is PARTIAL — the tail is missing.]\n\n" + err.partial
+                    f"[AMBIENT NOTE: the stream ended mid-generation; this output "
+                    f"is {kind} — the tail is missing.]\n\n" + answer
                 )
                 # The partial output was PAID FOR: meter it as an estimated
                 # record instead of returning empty usage — spend must never
@@ -5044,6 +5149,15 @@ def density_factor(text):
     sample = text[:200_000]
     non_ascii = sum(1 for ch in sample if ord(ch) > 127)
     return 1.0 + (non_ascii / len(sample)) * 1.6
+
+
+def effective_chars(*parts):
+    """Window-space size of several text parts: each part gets its OWN density factor
+    (a CJK --system and an ASCII question are measured separately, then summed), so a
+    dense component can't be under-counted by an ASCII sibling's factor, nor an ASCII
+    component over-counted by a dense one. Used for routing, fit, and budget sizing so
+    they all agree."""
+    return sum(int(len(p) * density_factor(p)) for p in parts if p)
 
 
 def pack_chunks(labeled_chunks, chunk_chars=CHUNK_CHARS):
@@ -5863,7 +5977,13 @@ def cmd_use(args, api_key, api_url, conf):
             sugg = subs or difflib.get_close_matches(chosen, known_ids,
                                                      n=3, cutoff=0.4)
             hint = f" Did you mean: {', '.join(sugg[:3])}?" if sugg else ""
-            sys.exit(f"ambient: unknown model '{chosen}'.{hint} "
+            # Never echo a key-shaped value verbatim (a mistaken `ambient use sk-…`); the
+            # 32-char floor keeps real model ids (deepseek-v4-flash-0731) unmasked.
+            shown = ("<redacted — looks like an API key>"
+                     if (len(chosen) >= 32 and re.fullmatch(r"[A-Za-z0-9_.\-]{32,}", chosen))
+                     or any(p.search(chosen) for p in SECRET_PATTERNS)
+                     else chosen)
+            sys.exit(f"ambient: unknown model '{shown}'.{hint} "
                      "Run 'ambient models' for the list.")
     if not is_auto_model(chosen) and is_hidden(chosen, allow, hide, show):
         print(
@@ -6052,35 +6172,49 @@ def cmd_ask(args, api_key, api_url, conf):
         _ask_consensus(args, api_key, api_url, conf, catalog, question, doc,
                        session=session)
         return
-    input_size = len(question) + (len(doc) if doc else 0)
-    # advisory routing: expands an explicit `-m auto` (printed) or
-    # prints the readiness/fit hint — a concrete model is NEVER changed.
-    model = route_model(args, conf, "chat", catalog, input_chars=input_size)
+    sys_text = getattr(args, "system", None) or ""   # --system rides every call
+    # Route + size by the DENSITY-ADJUSTED, PER-COMPONENT total: a CJK --system
+    # with an ASCII question is measured correctly, and vice-versa.
+    model = route_model(args, conf, "chat", catalog,
+                        input_chars=effective_chars(sys_text, question, doc))
     reduce_model = resolve_reduce_model(args, conf, model, catalog=catalog)
     profile = model_profile(catalog, model)
-    sizing = (input_size if input_size <= profile.single_shot_chars
-              else profile.chunk_chars)
-    apply_output_budget(args, profile, sizing)
     single, chunk = profile.single_shot_chars, profile.chunk_chars
+    eff_total = effective_chars(sys_text, question, doc)
+    apply_output_budget(args, profile, eff_total if eff_total <= single else chunk)
     want_json = getattr(args, "json", False)
 
     def split_over_doc():
         q = question or "Summarize the essential content."
         base = args.system or "You are a careful, precise analyst."
-        # Token-dense text (CJK ~1-1.5 chars/token vs code ~3.2) must get
-        # proportionally smaller chunks or every chunk 400s on context.
-        chunk_eff = max(MIN_REASONING_CHUNK,
-                        int(chunk / density_factor(doc)))
-        packed = pack_chunks([("input", doc)], chunk_eff)
-        # Each REAL chunk's size — a live --fallback map worker swaps on its
-        # own chunk, so the gate must reserve that chunk's own candidate,
-        # never the uniform average (final spend-safety HIGH).
-        cost_gate_mr(catalog, model, reduce_model, len(doc), len(packed),
-                     args, conf, per_call_chars=[len(c) for c in packed])
-        final, partial, reason = run_map_reduce(
-            api_key, api_url, model,
+        # Build the ACTUAL map system prompt once and measure IT — no +N pad that could
+        # under/over-count the wrapper. This exact string rides every map call
+        # and is what the cost gate must price.
+        map_system = (
             f"{base}\nQUESTION: {q}\nFrom the given chunk, extract everything "
-            "relevant and give a partial answer based on THIS chunk alone.",
+            "relevant and give a partial answer based on THIS chunk alone.")
+        # Keep the WHOLE map call (system + one doc chunk) within `chunk` — the input size
+        # the output budget above was sized against — so a chunk near the window can't
+        # leave the reasoning budget short. If the system prompt leaves no viable content
+        # room, REFUSE before billing rather than emit oversized chunks.
+        overhead = effective_chars(map_system)
+        content_eff = chunk - overhead
+        if content_eff < MIN_REASONING_CHUNK:
+            usage_exit(
+                f"--system + question overhead (~{overhead:,} effective chars) leaves no "
+                f"room for content in {model}'s per-chunk budget (~{chunk:,}); shorten "
+                "--system/the question or use a larger-context model")
+        # Convert the window-space content budget to RAW doc chars via the doc's density.
+        chunk_eff = max(1, int(content_eff / density_factor(doc)))
+        packed = pack_chunks([("input", doc)], chunk_eff)
+        # Price EACH map call at its EXACT billed size — the real map system prompt + the
+        # chunk; a live --fallback worker swaps on its own chunk, so
+        # the gate reserves that chunk's own candidate.
+        per_call = [len(map_system) + len(c) for c in packed]
+        cost_gate_mr(catalog, model, reduce_model, sum(per_call), len(packed),
+                     args, conf, per_call_chars=per_call)
+        final, partial, reason = run_map_reduce(
+            api_key, api_url, model, map_system,
             packed, args,
             f"You are merging partial answers to: {q}\nCombine into one final, "
             "coherent, non-repetitive answer; resolve conflicts explicitly.",
@@ -6094,22 +6228,21 @@ def cmd_ask(args, api_key, api_url, conf):
             return
         render_result(final, partial, reason, args, api_key)
 
-    if not doc and len(question) > single:
-        # No-refusal invariant: a giant argv prompt (ambient ask "$(cat big.md)")
-        # flows into the same split machinery as piped input instead of dying
-        # on a context 400 after billing the attempt.
-        doc, question = question, (
-            "Answer the request contained in the document (any instructions "
-            "are embedded within it).")
-    eff_total = int((len(question) + len(doc)) * density_factor(doc or question))
-    if doc and eff_total > single:
+    if eff_total > single:
+        if not doc:
+            # No stdin doc: flow the (large OR dense) argv question through the SAME split
+            # machinery as piped input — the no-refusal invariant. Promotion is by
+            # EFFECTIVE size, so a dense-but-short question is chunked, not 400'd.
+            doc, question = question, (
+                "Answer the request contained in the document (any instructions "
+                "are embedded within it).")
         if best_of_k:
             # K independent samples of a map-reduce would K× every chunk with
             # no per-sample selection semantics — refuse honestly up front.
             usage_exit("--best-of needs a single-shot-sized input — this one "
                        "requires map-reduce splitting; shrink the input or "
                        "drop --best-of")
-        split_over_doc()
+        split_over_doc()  # refuses inside if --system overhead leaves no chunk room
         return
     prompt = f"{question}\n\n{doc}".strip() if doc else question
     messages = []
@@ -6540,6 +6673,7 @@ def _ask_consensus(args, api_key, api_url, conf, catalog, question, doc,
     spec = RequestSpec.from_args(args)
     models = _parse_consensus_models(spec, catalog, api_key)
     prompt = f"{question}\n\n{doc}".strip() if doc else question
+    sys_text = spec.system or ""   # --system is transmitted to EVERY member
     want_json = spec.json
     explicit_max = spec.max_tokens is not None
     expected_sum = bound_sum = 0.0
@@ -6551,13 +6685,13 @@ def _ask_consensus(args, api_key, api_url, conf, catalog, question, doc,
         # consensus ask is single-shot only — a split lane would multiply the
         # fan-out by the model count with no corroboration payoff. Honest
         # refusal up front, before any spend.
-        if int(len(prompt) * density_factor(prompt)) > p.single_shot_chars:
+        if effective_chars(sys_text, prompt) > p.single_shot_chars:
             usage_exit(
                 f"input too large for --consensus on '{m}' (consensus asks "
-                "are single-shot) — shrink the input, or drop --consensus "
-                "and let the normal ask lane split it")
+                "are single-shot) — shrink the input or --system, or drop "
+                "--consensus and let the normal ask lane split it")
         budget = spec.max_tokens if explicit_max else p.output_budget
-        exp, bnd, _asm = estimate_cost(catalog, m, len(prompt), 1, budget)
+        exp, bnd, _asm = estimate_cost(catalog, m, len(sys_text) + len(prompt), 1, budget)
         expected_sum += exp
         bound_sum += bnd
         parts.append(m.split('/')[-1])
@@ -6585,7 +6719,7 @@ def _ask_consensus(args, api_key, api_url, conf, catalog, question, doc,
         wa = dataclasses.replace(
             spec, _no_fallback=True,
             max_tokens=spec.max_tokens if explicit_max else None)
-        wa = wa.with_output_budget(profiles[m], len(prompt))
+        wa = wa.with_output_budget(profiles[m], len(sys_text) + len(prompt))
         with gate:
             if cancel_event.is_set():
                 raise ChatError("cancelled", "consensus ask cancelled")
@@ -6722,18 +6856,21 @@ def _read_map_item(path):
         return None, "not a regular file"
     try:
         with open(path, "rb") as fh:
-            raw = fh.read(ABS_MAX_CHARS + 1)
+            # Read enough BYTES to cover the char ceiling at up to 4 UTF-8 bytes/char, so
+            # the ceiling below is enforced on DECODED CHARACTERS — a large CJK file (3-4
+            # bytes/char) is not falsely rejected on its byte size.
+            raw = fh.read(ABS_MAX_CHARS * 4 + 1)
     except OSError as err:
         return None, f"unreadable ({err})"
     if b"\x00" in raw[:8192]:
         return None, "looks binary — map sends text items only"
-    if len(raw) > ABS_MAX_CHARS:
+    text = raw.decode("utf-8", errors="replace")
+    if len(text) > ABS_MAX_CHARS:
         # NEVER ship a silently truncated item — even if a model's window
         # somehow exceeded the ceiling, a half-read answered authoritatively
         # is worse than a per-item refusal.
         return None, (f"file exceeds the {ABS_MAX_CHARS:,}-char ceiling — "
                       "too large for map; run ambient audit on it instead")
-    text = raw.decode("utf-8", errors="replace")
     if not text.strip():
         return None, "empty file"
     return text, None
@@ -6804,7 +6941,13 @@ def _emit_map_result(args, api_key, item_id, *, content=None, partial=False,
     if content is None:
         status, code = "error", 1
     elif partial:
-        status, code = "partial", EXIT_PARTIAL
+        # status reflects the CONTENT (truncated); exit_code reflects the POLICY.
+        # Under --allow-partial the process itself exits 0 (see cmd_map's final
+        # gate), so an accepted partial's envelope must say 0 too — never
+        # exit_code 2 while the run returned 0 (that breaks a JSONL consumer that
+        # keys off exit_code). status stays "partial" so the truncation is visible.
+        status = "partial"
+        code = 0 if getattr(args, "allow_partial", False) else EXIT_PARTIAL
     else:
         status, code = "ok", 0
     if _json_mode(args):
@@ -7227,7 +7370,7 @@ def _titles_match(a, b):
     over at most 4 significant words: 'SQL injection' matches 'SQL injection
     here', but 'missing null check' does not match 'missing rate limit'.
     (A looser token-overlap heuristic was tried for F05b's cosmetic best-of
-    duplicates but reverted — Codex showed it false-merges 'SQL injection in
+    duplicates but reverted showed it false-merges 'SQL injection in
     search query' with '…in login query', and DROPPING a distinct finding is
     far worse than showing a duplicate.)"""
     n = min(len(a), len(b), 4)
@@ -7315,9 +7458,9 @@ def findings_reducer(texts):
 # GLM 5.2 on Ambient) still produces recoverable structured findings.
 # Leading noise a finding/verdict line may carry: whitespace, blockquote,
 # markdown bold, '*'/'•' bullets, and a numbered-list marker (1. / 2) / (3)) —
-# models routinely number findings (Codex round 3). Deliberately EXCLUDES '-'
+# models routinely number findings. Deliberately EXCLUDES '-'
 # and '+': those are diff markers, and a quoted '+ HIGH (confidence…) — f:1'
-# inside a ```diff block must NOT be parsed as a live finding (Codex round 2).
+# inside a ```diff block must NOT be parsed as a live finding.
 _PROSE_LEAD = r"[\ \t>#]*(?:\d+[.)])?[\ \t]*[*•]*[\ \t]*"
 # A FILE-LIKE file:line — the token before the colon must contain a '.' or '/'
 # (a real path like 'auth.py:42' or 'src/auth.py:42'), distinguishing it from a
@@ -7354,7 +7497,7 @@ _PROSE_FINDING_RE = re.compile(
     r"^" + _PROSE_LEAD +                              # leading noise / bullet
     r"(CRITICAL|HIGH|MEDIUM|LOW)(?![a-z\-])"           # 1 severity (not 'LOW-risk')
     # 2 confidence (OPTIONAL) — may sit after a separator ('HIGH — Confidence: HIGH
-    # — …', Codex round 10); the 'confidence' keyword is what justifies the gap, so
+    # — …'); the 'confidence' keyword is what justifies the gap, so
     # a bare phrase ('Critical sections audited:') can NOT open one (Workflow).
     # Whitespace runs BOUNDED ({0,20}) — an unbounded '[ \t]*' overlapping the
     # trailing separator's '[ \t]*' is O(n^2) on 'HIGH' + a huge space run (ReDoS).
@@ -7376,12 +7519,12 @@ _PROSE_VERDICT_RE = re.compile(
 # a (confidence: …), a dash separator, AND a file:line (":<digit>"). The dash
 # requirement is what keeps it off clean prose that merely QUOTES an example
 # ("HIGH (confidence: HIGH) at foo.py:1 means …" has no '—' before the
-# file:line, so it stays a real clean SHIP — Codex round 3), while a real
+# file:line, so it stays a real clean SHIP), while a real
 # '- HIGH … — f:1 — …' header still trips it → safe raw envelope, never a
 # silent drop.
 # A finding-shaped line we failed to parse: one line that contains ALL THREE of
 # a severity, a (confidence: …), and a file:line (':<opt space><digit>') — in
-# ANY order (Codex round 9: 'HIGH — a.py:7 — … (confidence: HIGH)' put
+# ANY order ('HIGH — a.py:7 — … (confidence: HIGH)' put
 # confidence last). Three independent lookaheads = order-independent. We bias
 # toward firing: the ONLY cost is the raw envelope, whereas NOT firing hides a
 # real defect behind a clean SHIP. Clean prose that names a severity with NO
@@ -7421,7 +7564,7 @@ _PROSE_DEFECT_VERB_RE = re.compile(
     r"|plaintext[ ](?:password|secret|credential)s?"
     r"|leaks?[ ](?:the[ ]|a[ ])?(?:secret|password|credential|token|session)s?)\b")
 # A field-LIST finding splits the fields across lines ('Severity: HIGH' /
-# 'Line: 42') — the single-line hint misses it (Codex round 14). A 'Severity:'
+# 'Line: 42') — the single-line hint misses it. A 'Severity:'
 # label naming a real level PLUS a 'Line:' label with a digit is an unparsed
 # finding → must not fake a clean SHIP.
 _PROSE_FIELD_SEV_RE = re.compile(
@@ -7430,7 +7573,7 @@ _PROSE_FIELD_SEV_RE = re.compile(
     r"[^\n:—–]*[:—–\-]\*{0,4}[ \t]*"                           # …'level'/'rating'/… then a sep
     r"(?:CRITICAL|HIGH|MEDIUM|LOW|BLOCKER|MAJOR|MINOR)\b")  # then the level as the value
 # A Markdown TABLE row carrying a severity level ('| HIGH | app/auth.py | 42 |
-# … |') is a finding row (Codex round 27) — a header row ('| Severity | File |')
+# … |') is a finding row — a header row ('| Severity | File |')
 # has no level, so it does not trip.
 # A Markdown table CELL holding a severity level ('| P0 |', '| HIGH — … |') in
 # any column. Matching a single bounded cell (pipe, severity, ≤80 non-pipe chars,
@@ -7439,14 +7582,14 @@ _PROSE_FIELD_SEV_RE = re.compile(
 _PROSE_TABLE_ROW_RE = re.compile(
     r"(?i)\|[ \t]*(?<![A-Za-z])" + _SEV_WORD + r"(?![A-Za-z])[^\n|]{0,80}\|")
 # A 'Finding 1: HIGH' / 'Issue: CRITICAL' heading whose VALUE is a severity
-# level (Codex round 33) — the level must follow the heading's separator, so a
+# level — the level must follow the heading's separator, so a
 # clean 'Findings: none' does not trip.
 _PROSE_FINDING_HEADING_RE = re.compile(
     r"(?im)^[\ \t>*•#\-]*(?:\d+[.)][ \t]*)?\*{0,4}"
     r"(?:finding|issue|bug|vulnerability|defect|weakness)s?\b[ \t]*\d*[ \t]*"
     r"[:—–\-]\*{0,4}[ \t]*(?:CRITICAL|HIGH|MEDIUM|LOW)\b")
 # Finding-specific FIELD labels a clean audit never writes — even with no
-# severity level anywhere (Codex round 34: a 'Defect:'/'File:'+'Line:' field-list
+# severity level anywhere (a 'Defect:'/'File:'+'Line:' field-list
 # with no Severity field).
 _PROSE_DEFECT_FIELD_RE = re.compile(
     r"(?im)^[\ \t>*•#\-]*\*{0,4}(?:defect|vulnerabilit(?:y|ies)|weakness|flaw|exploit"
@@ -7544,7 +7687,7 @@ def _text_has_unparsed_finding(text):
     severity+file:line, a line-anchored 'Severity: <level>' field label, or a
     Markdown table row with a severity level. Used both to avoid faking a clean
     verdict on an unparsed finding AND to distrust an EMPTY-findings JSON result
-    whose surrounding text clearly reports a defect (Codex rounds 14-30)."""
+    whose surrounding text clearly reports a defect."""
     text = _strip_illustrative(_strip_code_fences(text[:PROSE_SCAN_MAX]))
     has_loc = bool(_PROSE_BARE_FILELINE_RE.search(text)
                    or _PROSE_LINEREF_RE.search(text))
@@ -7568,11 +7711,10 @@ def _text_has_unparsed_finding(text):
                 or (_PROSE_FILE_FIELD_RE.search(text)
                     and _PROSE_LINE_FIELD_RE.search(text)))
 # A location for a field-list finding: 'Line: 42', 'File: a.py:42',
-# 'Location: a.py:42', or any word/path followed by ':<digit>' (Codex round 15).
+# 'Location: a.py:42', or any word/path followed by ':<digit>'.
 # A field-list finding always carries a LOCATION field. Match the LABEL
 # (File:/Location:/Path:/Line:/Lines:) or a bare file:line — robust against every
-# line-number phrasing ('line 42', 'lines 42-45', 'line number 42' — Codex round
-# 15-18), instead of enumerating them. Paired with a 'Severity: <level>' label,
+# line-number phrasing ('line 42', 'lines 42-45', 'line number 42'), instead of enumerating them. Paired with a 'Severity: <level>' label,
 # this is an unparsed finding, never a clean SHIP.
 _PROSE_FIELD_LINE_RE = re.compile(
     r"(?im)(?:^[\ \t>*•#\-]*(?:file|location|path)\s*[:—–\-]"  # File/Location/Path label
@@ -7617,7 +7759,7 @@ def parse_prose_findings(text):
             continue  # 'HIGH — auth.py:88 — RESOLVED: …' is not a live defect
         findings.append({
             "severity": sev.upper(),
-            # confidence is optional in the prose (Codex R11); an unstated one
+            # confidence is optional in the prose; an unstated one
             # defaults to HIGH — conservative, so it never softens a finding.
             "confidence": (conf or "HIGH").upper(),
             "file": fname,
@@ -7628,7 +7770,7 @@ def parse_prose_findings(text):
             "fix": _extract_labeled(body, "fix"),
         })
     # The FINAL verdict line wins — an earlier one may be quoted inside a
-    # finding's scenario (Codex: 'Verdict: SHIP' in a scenario preceded the real
+    # finding's scenario ('Verdict: SHIP' in a scenario preceded the real
     # 'Verdict: FIX FIRST').
     verdicts = _PROSE_VERDICT_RE.findall(text)
     vlast = verdicts[-1].upper() if verdicts else None
@@ -7640,7 +7782,7 @@ def parse_prose_findings(text):
         # A line-anchored 'Severity: <level>' label is ALWAYS a finding field
         # (a clean audit never writes one — it says "no defects"/"Verdict: SHIP")
         # so it needs NO location match: this closes the whole file:line-notation
-        # tail (Codex rounds 14-25) at the root. The single-line hint covers
+        # tail at the root. The single-line hint covers
         # inline 'HIGH … file:line' findings.
         if _text_has_unparsed_finding(text):
             return None
@@ -7659,7 +7801,7 @@ def render_findings(raw, fmt, api_key, partial=False, reason="", model=None):
     obj = extract_json(raw) if isinstance(raw, str) else raw
     recovered_from_prose = False
     # A model may emit an EMPTY '{"findings":[],"verdict":"SHIP"}' JSON AND then
-    # real PROSE findings (Codex round 29). Don't trust an empty JSON result if
+    # real PROSE findings. Don't trust an empty JSON result if
     # the surrounding text carries prose findings — recover them instead of
     # faking a clean pass.
     if (isinstance(raw, str) and obj and isinstance(obj.get("findings"), list)
@@ -7698,7 +7840,7 @@ def render_findings(raw, fmt, api_key, partial=False, reason="", model=None):
     # structured output: clean JSON => yes; prose recovery => no. The reducer
     # emits its own JSON STRING carrying _unparsed_chunks / _repaired_chunks
     # markers — that is deterministic tool output, NOT this model's structured
-    # reply (Codex: it was training structured_json=True from partial reducer
+    # reply (it was training structured_json=True from partial reducer
     # output), so skip recording for it.
     is_reducer_output = isinstance(obj, dict) and any(
         k in obj for k in ("_unparsed_chunks", "_repaired_chunks", "_repaired"))
@@ -7725,7 +7867,7 @@ def render_findings(raw, fmt, api_key, partial=False, reason="", model=None):
     verdict = obj.get("verdict") or _verdict_from(findings, partial)
     if partial and verdict == "SHIP":  # a partial audit can never be a clean pass
         verdict = "NEEDS WORK"
-    # A model-stated SHIP can't coexist with ANY finding (Codex round 2 + 28): a
+    # A model-stated SHIP can't coexist with ANY finding: a
     # self-contradicting reply must not let the pre-commit hook wave through a
     # real defect. HIGH/CRITICAL => FIX FIRST; any MEDIUM/LOW => NEEDS WORK.
     if verdict == "SHIP" and findings:
@@ -8668,7 +8810,7 @@ def _print_repo_plan(meta, catalog, model, reduce_model, labeled, total,
             and n_chunks > 1)
     if args.format == "json":
         # No cost fields: billing is plan-dependent, so the machine plan reports
-        # files/chars/chunks only — never a dollar estimate (founder policy).
+        # files/chars/chunks only — never a dollar estimate.
         plan = {"schema_version": 1, "kind": "audit", "status": "plan",
                 "repo": meta["root"], "files": meta["files"],
                 "chars": meta["chars"], "git": meta["git"],
@@ -9685,7 +9827,7 @@ def cmd_chat(args, api_key, api_url, conf):
                 "Shorten it, or use `ambient ask -f FILE` for large inputs.",
                 file=sys.stderr)
             continue
-        # Never publish a credential typed into the REPL (Codex round 4: chat
+        # Never publish a credential typed into the REPL (chat
         # had no tripwire). Warn and SKIP the turn — the REPL survives, unlike
         # the sys.exit refusal the one-shot commands use.
         if not getattr(args, "allow_secrets", False) and any(
@@ -10034,6 +10176,12 @@ def safe_relpath(path, root):
     return "/".join(parts)
 
 
+# Cache-busting salt folded into task_sha: bump it whenever the build-state format
+# or the planning/generation contract changes, so every stale .ambient-build.json is
+# invalidated at once instead of resuming under a new code path.
+_BUILD_RESUME_SCHEMA = 2
+
+
 def _build_state_path(root):
     return os.path.join(root, ".ambient-build.json")
 
@@ -10183,6 +10331,11 @@ def cmd_build(args, api_key, api_url, conf):
     reduce_model = resolve_reduce_model(args, conf, model, catalog=catalog)
     profile = model_profile(catalog, model)
     single = profile.single_shot_chars
+    # Capture the user's EXPLICIT budget BEFORE apply_output_budget resolves it: the
+    # resume identity must hash a stable "auto" sentinel for auto-budgeted runs, not the
+    # telemetry-derived value (which drifts with observed chars/token and would wrongly
+    # invalidate a legitimate resume of an unchanged command).
+    user_max_tokens = getattr(args, "max_tokens", None)
     # Generation wants the full budget: reasoning + several complete files.
     apply_output_budget(args, profile, single)
 
@@ -10286,9 +10439,15 @@ def cmd_build(args, api_key, api_url, conf):
 
     # M21: fold the caps into the identity so lowering --max-files/--max-file-
     # bytes invalidates a cached larger plan instead of resuming it verbatim.
+    # Also fold EVERY option that changes the plan or the generated bytes
+    # (temperature, output budget) + the state-schema salt — otherwise a re-run
+    # with a different --temperature/--max-tokens announces an "exact task" match
+    # and serves a stale plan/files.
     task_sha = hashlib.sha256(
-        (f"{task}\0{model}\0{','.join(sorted(args.context or []))}"
-         f"\0{raw_context_sha}\0{args.max_files}\0{args.max_file_bytes}").encode()
+        (f"{_BUILD_RESUME_SCHEMA}\0{task}\0{model}\0{','.join(sorted(args.context or []))}"
+         f"\0{raw_context_sha}\0{args.max_files}\0{args.max_file_bytes}"
+         f"\0{getattr(args, 'temperature', None)}"
+         f"\0{user_max_tokens if user_max_tokens is not None else 'auto'}").encode()
     ).hexdigest()
     # max_plan = the user's OWN --max-files: task_sha matching is cache identity,
     # not integrity, so a poisoned same-hash state must not exceed the cap.
@@ -10343,10 +10502,10 @@ def cmd_build(args, api_key, api_url, conf):
                 # is worth downgrading for. Every other category — rate, model,
                 # context, budget, key, funds, network, service — won't improve
                 # on a looser rung, so abort now and surface the real cause
-                # instead of a misleading 'no usable plan' (Codex round 2). We do
+                # instead of a misleading 'no usable plan'. We do
                 # NOT record a capability outcome here: an infra failure (rate/
                 # outage/funds/network) is NOT the model failing to plan, and
-                # recording False would wrongly mark it unreliable (Codex round 3).
+                # recording False would wrongly mark it unreliable.
                 if err.category != "unknown" or attempt == len(attempts):
                     _fail(args, "build",
                           ChatError(err.category,
@@ -10355,7 +10514,7 @@ def cmd_build(args, api_key, api_url, conf):
                 continue
             # Track the model that ACTUALLY served on EVERY successful call (even
             # a non-JSON one) so a --fallback served model gets the credit/blame,
-            # not the requested model — on the failure path too (Codex round 2).
+            # not the requested model — on the failure path too.
             served_model = _served_model_of(_b, model)
             # The plan is the build CONTRACT (its paths drive later file writes),
             # so it must come from real, COMPLETE model output — never reasoning
@@ -10416,7 +10575,7 @@ def cmd_build(args, api_key, api_url, conf):
             print(f"ambient: plan capped at {args.max_files} files "
                   f"(model proposed {len(obj['plan'])}; raise with "
                   "--max-files)", file=sys.stderr)
-        # Learn AFTER path validation (Codex: recording True before validation
+        # Learn AFTER path validation (recording True before validation
         # marked a model capable when every path was unsafe → build unusable).
         record_cap(served_model, "build_plan", bool(plan))
         if not plan:
@@ -10745,6 +10904,21 @@ def cmd_build(args, api_key, api_url, conf):
         if proceed:
             bak_dir = os.path.join(root, ".ambient-build.bak",
                                    time.strftime("%Y%m%d-%H%M%S"))
+
+            def _restore_or_preserve(dest_path, backup):
+                """Put a --force backup back at its destination — but ONLY if the
+                destination's parent is still within root, so a parent swapped to an
+                OUTSIDE symlink can't let the restore clobber outside the tree.
+                Returns a human note describing the outcome."""
+                try:
+                    parent_real = os.path.realpath(os.path.dirname(dest_path))
+                    if not _within_root(parent_real, os.path.realpath(root)):
+                        return f"original preserved at {backup} (dest parent unsafe to restore)"
+                    os.replace(backup, dest_path)
+                    return "original restored"
+                except OSError as rerr:
+                    return f"original preserved at {backup} (auto-restore failed: {rerr})"
+
             for rel, rec in sorted(done.items()):
                 dest = os.path.join(root, *rel.split("/"))
                 # Re-validate the parent BEFORE any lexists/backup touches the
@@ -10761,6 +10935,8 @@ def cmd_build(args, api_key, api_url, conf):
                     partial = True
                     continue
                 action = "create"
+                backup_path = None  # set to the .bak path once the original is moved aside
+                tmp = None          # set once mkstemp stages the new content
                 if os.path.lexists(dest):
                     # Idempotent re-run: an existing file whose content already
                     # matches is an "unchanged" no-op, NOT a partial result —
@@ -10792,6 +10968,7 @@ def cmd_build(args, api_key, api_url, conf):
                         bpath = os.path.join(bak_dir, *rel.split("/"))
                         os.makedirs(os.path.dirname(bpath), exist_ok=True)
                         os.replace(dest, bpath)
+                        backup_path = bpath  # original moved aside; restore on write failure
                     except OSError as err:
                         # Backup failed — REFUSE to overwrite. Silently
                         # destroying the user's original file (while reporting
@@ -10803,6 +10980,7 @@ def cmd_build(args, api_key, api_url, conf):
                                        f"without a backup: {err}"})
                         partial = True
                         continue
+                committed = False
                 try:
                     os.makedirs(os.path.dirname(dest), exist_ok=True)
                     # Re-validate IMMEDIATELY before writing: a parent dir
@@ -10823,11 +11001,35 @@ def cmd_build(args, api_key, api_url, conf):
                     if os.path.islink(dest):
                         raise OSError("destination became a symlink")
                     os.replace(tmp, dest)  # plain file perms; never executable
+                    committed = True
                     actions[rel] = action
                 except OSError as err:
+                    # The new content did not land. Remove any staging temp, and if
+                    # --force already moved the original into .ambient-build.bak, put it
+                    # BACK (revalidated) — an overwrite failure must never leave the
+                    # destination absent (destroying the user's file).
+                    if tmp is not None:
+                        with contextlib.suppress(OSError):
+                            os.unlink(tmp)
                     actions[rel] = "write-failed"
-                    failed.append({"path": rel, "reason": f"write failed: {err}"})
+                    if backup_path is not None:
+                        note = _restore_or_preserve(dest, backup_path)
+                        failed.append({"path": rel, "reason": f"write failed: {err}; {note}"})
+                    else:
+                        failed.append({"path": rel, "reason": f"write failed: {err}"})
                     partial = True
+                except BaseException:
+                    # A signal (Ctrl-C / SystemExit) landing AFTER the --force backup
+                    # move but BEFORE the os.replace would otherwise leave dest absent.
+                    # Restore the original (revalidated), clean the staging temp, then
+                    # re-raise so the signal still propagates.
+                    if not committed:
+                        if tmp is not None:
+                            with contextlib.suppress(OSError):
+                                os.unlink(tmp)
+                        if backup_path is not None:
+                            _restore_or_preserve(dest, backup_path)
+                    raise
             # "written" == at least one file actually landed with the intended
             # content (freshly created/overwritten, or already-present-and-
             # matching). If every file skip-exists'd or write-failed, nothing
@@ -11012,8 +11214,8 @@ def _config_redact(text):
     """Echo an unknown setting name back ONLY if it is a short, clean slug (a
     plausible typo like 'streming'). Anything else — a mistyped key, a value with
     spaces/unicode, a vendor-format secret, a long opaque token — is replaced with a
-    placeholder, so nothing secret-shaped can ever reach stderr (Codex 2026-07-08:
-    a whitelist of safe SHAPE beats a blocklist of secret shapes)."""
+    placeholder, so nothing secret-shaped can ever reach stderr (a whitelist of safe SHAPE beats a
+    blocklist of secret shapes)."""
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,30}", text) \
             and not any(p.search(text) for p in SECRET_PATTERNS):
         return text
@@ -11078,7 +11280,7 @@ def cmd_config(args):
     # A setting name never contains '=' or a secret. Split at '=' so a fat-fingered
     # `set key=<SECRET>` is read as the name `key` (the value part is dropped, never
     # echoed), and redact any secret-looking name before it could reach stderr
-    # (Codex 2026-07-08 — the unknown-setting error must not leak a mistyped key).
+    # (the unknown-setting error must not leak a mistyped key).
     bare = name.split("=", 1)[0].strip()
     if bare.lower().replace("_", "-") in ("key", "api-key", "apikey", "ambient-api-key"):
         usage_exit(
@@ -11448,6 +11650,33 @@ def cmd_doctor(args):
     except OSError:
         report("cache", True, "empty (created on first map-reduce)")
 
+    # The local Anthropic->Ambient bridge (run Claude Code ON Ambient). On-demand, so
+    # "not running" is normal, never a FAIL — it auto-starts with `ambient claude`.
+    try:
+        bpath = os.path.join(os.path.dirname(CONFIG_PATH), "bridge.json")
+        bstate = None
+        if os.path.exists(bpath):
+            with open(bpath, encoding="utf-8") as fh:
+                bstate = json.load(fh)
+        if isinstance(bstate, dict) and isinstance(bstate.get("port"), int):
+            bport = bstate["port"]
+            alive = False
+            try:
+                with urllib.request.urlopen(
+                        f"http://127.0.0.1:{bport}/healthz", timeout=1) as br:
+                    alive = br.status == 200
+            except (urllib.error.URLError, OSError, ValueError):
+                alive = False
+            report("bridge", True,
+                   f"running on 127.0.0.1:{bport} (Claude Code can run on Ambient)"
+                   if alive else
+                   f"not running (auto-starts with `ambient claude`; last port {bport})")
+        else:
+            report("bridge", True,
+                   "not started — run `ambient claude` to run Claude Code on Ambient")
+    except (OSError, ValueError):
+        report("bridge", True, "not started")
+
     if ok:
         print("\nDIAGNOSIS: healthy. Key valid, account billable, API reachable."
               + ("" if ready else " (No models are serving this minute — the "
@@ -11455,6 +11684,17 @@ def cmd_doctor(args):
     else:
         print(f"\nDIAGNOSIS [{category}]: {detail}")
         sys.exit(1)
+
+
+def _usage_empty_json(days):
+    """A valid, schema-versioned EMPTY summary for `usage --json` (an empty/absent ledger
+    is a normal state on a fresh install — honor the machine-readable contract, exit 0)."""
+    print(json.dumps({
+        "schema_version": 1, "days": days, "models": [], "all_priced": True,
+        "savings": False, "saved_pct": None, "approx_ref_records": 0, "est_records": 0,
+        "unmetered_lanes": ["agent"],
+        "note": "no usage recorded in this window",
+    }, indent=2))
 
 
 def cmd_usage(args):
@@ -11482,6 +11722,9 @@ def cmd_usage(args):
                     continue
                 records.append(rec)
     except FileNotFoundError:
+        if getattr(args, "json", False):
+            _usage_empty_json(args.days)
+            return
         sys.exit("ambient: no usage recorded yet")
     except OSError as err:
         sys.exit(f"ambient: cannot read {USAGE_PATH}: {err}")
@@ -11490,6 +11733,9 @@ def cmd_usage(args):
     cutoff = time.time() - args.days * 86400
     recent = [r for r in records if _as_pos_int(r.get("ts"), 0) >= cutoff]
     if not recent:
+        if getattr(args, "json", False):
+            _usage_empty_json(args.days)
+            return
         sys.exit(f"ambient: no usage in the last {args.days} days")
     pricing = {}
     try:
@@ -11585,7 +11831,7 @@ def cmd_usage(args):
     show_savings = _savings_enabled(conf)
     if getattr(args, "json", False):
         # Relative % savings only — NO dollar figures and NO per-token
-        # reference prices (founder policy: billing is plan-dependent).
+        # reference prices (billing is plan-dependent).
         overall_pct = (int(grand_saved / grand_frontier * 100)
                        if show_savings and grand_frontier > 0 and grand_saved > 0
                        else None)
@@ -11732,19 +11978,30 @@ def cmd_link(args):
         else:
             print(f"nothing to remove at {dest}")
         return
-    if os.path.exists(dest) and not os.path.islink(dest):
-        sys.exit(
-            f"ambient: {dest} exists and is not a symlink — refusing to "
-            "overwrite it. Pass --dir DIR to link somewhere else."
-        )
-    if os.path.islink(dest) and not _link_is_ours(dest):
-        # An existing (or dangling) symlink to a NON-ambient-code target is a
-        # foreign `ambient` the user set up — never overwrite it.
-        sys.exit(
-            f"ambient: {dest} is a symlink to another tool "
-            f"({os.readlink(dest)}) — refusing to overwrite it. "
-            "Pass --dir DIR to link somewhere else."
-        )
+    if os.name == "nt":
+        # The Windows launcher is a `.cmd` shim (symlinks need privilege), so the
+        # existence/ownership guard MUST check that exact file — the write below
+        # truncates `ambient.cmd`, not the extensionless `dest` the POSIX checks read.
+        shim = os.path.join(dest_dir, "ambient.cmd")
+        if os.path.exists(shim) and not _shim_is_ours(shim):
+            sys.exit(
+                f"ambient: {shim} exists and is not an ambient-code launcher — "
+                "refusing to overwrite it. Pass --dir DIR to link somewhere else."
+            )
+    else:
+        if os.path.exists(dest) and not os.path.islink(dest):
+            sys.exit(
+                f"ambient: {dest} exists and is not a symlink — refusing to "
+                "overwrite it. Pass --dir DIR to link somewhere else."
+            )
+        if os.path.islink(dest) and not _link_is_ours(dest):
+            # An existing (or dangling) symlink to a NON-ambient-code target is a
+            # foreign `ambient` the user set up — never overwrite it.
+            sys.exit(
+                f"ambient: {dest} is a symlink to another tool "
+                f"({os.readlink(dest)}) — refusing to overwrite it. "
+                "Pass --dir DIR to link somewhere else."
+            )
     try:
         os.makedirs(dest_dir, exist_ok=True)
         if os.name == "nt":  # symlinks need privileges on Windows — shim it
@@ -11819,6 +12076,28 @@ def ensure_opencode_config(api_url, model):
     """Fresh-install fix: create/repair the opencode provider config so
     `ambient agent` works out of the box instead of failing on a missing file.
     Never overwrites an existing 'ambient' provider the user may have tuned."""
+    # Serialize the entire read-modify-write across processes: two concurrent
+    # `ambient agent` runs would otherwise each read the old model map, add only
+    # their own model, and the second os.replace would drop the first's addition.
+    # Best-effort makedirs so the lock is effective on a fresh install too.
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(OPENCODE_CONFIG_PATH), exist_ok=True)
+    # Generous wait so the lock is virtually always acquired (the RMW is millisecond-
+    # fast, so a legit holder never makes us wait long). _fs_lock is fail-open: only a
+    # PATHOLOGICALLY stuck holder yields False. In that rare case we WARN (never silent)
+    # and proceed best-effort rather than skip — skipping would launch opencode without
+    # this run's model. The write is still atomic (os.replace), so nothing corrupts; the
+    # only residual is a rare lost model addition that self-heals on the next `ambient
+    # agent` run (the RMW re-reads and re-adds).
+    with _fs_lock(OPENCODE_CONFIG_PATH + ".lock", 10.0) as locked:
+        if not locked:
+            print("ambient: opencode config lock is held by another process; "
+                  "updating without the lock (a concurrent model addition may be "
+                  "retried on the next run)", file=sys.stderr)
+        _ensure_opencode_config_locked(api_url, model)
+
+
+def _ensure_opencode_config_locked(api_url, model):
     cfg = {}
     try:
         with open(OPENCODE_CONFIG_PATH, encoding="utf-8") as fh:
@@ -11961,7 +12240,7 @@ def cmd_agent(args, api_key, api_url, conf):
 
 def cmd_codex(args, api_key, api_url, conf):
     sys.exit(
-        "ambient: Codex CLI cannot talk to Ambient yet — Codex >=0.142 only speaks "
+        "ambient: Codex CLI cannot talk to Ambient yet >=0.142 only speaks "
         "the OpenAI Responses API, and Ambient's /v1/responses gateway rejects "
         "Codex's 'namespace' tool type and typed message content (verified "
         "2026-07-02). The provider config is already in place in ~/.codex; once "
@@ -12497,6 +12776,151 @@ def _audit_keyless_route(args):
     return None
 
 
+def _bridge_slot_factory():
+    """A concurrency gate capping concurrent UPSTREAM calls, so a subagent fan-out or a
+    compaction burst QUEUES instead of 429-storming Ambient. Native
+    Claude Code background agents all funnel through this one bridge, so they inherit it."""
+    import contextlib
+    try:
+        max_conc = int(os.environ.get("AMBIENT_BRIDGE_MAX_CONCURRENCY") or 6)
+    except (TypeError, ValueError):
+        max_conc = 6
+    gate = threading.BoundedSemaphore(max_conc) if max_conc > 0 else None
+
+    @contextlib.contextmanager
+    def slot():
+        if gate is not None:
+            gate.acquire()
+        try:
+            yield
+        finally:
+            if gate is not None:
+                gate.release()
+    return slot
+
+
+def _configure_serve(sub):
+    p = sub.add_parser("serve", help="run the local Anthropic<->Ambient reliability bridge "
+                                     "(loopback; `ambient claude` starts one for you)")
+    p.add_argument("--port", type=int, default=0,
+                   help="loopback port to bind (0 = auto-pick a free one)")
+    p.add_argument("-m", "--model", default=None,
+                   help="default Ambient model the bridge serves")
+
+
+def _configure_claude(sub):
+    p = sub.add_parser("claude", help="run Claude Code ON Ambient (auto-starts the bridge)")
+    p.add_argument("-m", "--model", default=None,
+                   help="default Ambient model to run Claude Code on")
+    p.add_argument("claude_args", nargs=argparse.REMAINDER,
+                   help="arguments forwarded to `claude` (put them after --)")
+
+
+def cmd_serve(args, api_key, api_url, conf):
+    """Run the local Anthropic->Ambient reliability bridge (loopback only). Claude Code
+    points ANTHROPIC_BASE_URL at it; `ambient claude` starts one for you automatically."""
+    server = _import_bridge("server")
+    upstream = _import_bridge("upstream")
+    launcher = _import_bridge("launcher")
+
+    host = "127.0.0.1"  # loopback ONLY — never bind a routable interface
+    port = getattr(args, "port", 0) or 0   # 0 -> OS picks; on_bound publishes the real port
+    token = os.environ.get("AMBIENT_BRIDGE_LOCAL_TOKEN") or launcher.generate_local_token()
+    default_model = resolve_model(args, conf, kind="code")
+    if isinstance(default_model, str) and default_model.startswith("auto"):
+        default_model = DEFAULT_CODE_MODEL  # never send an `auto` pseudo-model upstream
+
+    def _fetch_catalog():
+        # fetch_models sys.exits on failure; the bridge must DEGRADE, not die.
+        try:
+            return fetch_models(api_url, api_key)
+        except SystemExit:
+            return []
+        except Exception:  # noqa: BLE001
+            return []
+
+    call = upstream.make_live_upstream(api_key, api_url, slot=_bridge_slot_factory())
+    config_dir = os.path.dirname(CONFIG_PATH)
+    _private_dir(config_dir)
+    deps = server.Deps(local_token=token, api_url=api_url, default_model=default_model,
+                       upstream_call=call, fetch_catalog=_fetch_catalog, version=__version__,
+                       learned_path=os.path.join(config_dir, "learned_windows.json"))
+    state_path = launcher.bridge_state_path(config_dir)
+
+    def _on_bound(bound_port):
+        # Publish state ONLY after the socket is bound (no advertise-then-fail race).
+        launcher.write_bridge_state(state_path, host, bound_port, os.getpid(), token)
+        sys.stderr.write("ambient bridge ready on http://{0}:{1}  ->  Ambient (default {2})\n".format(
+            host, bound_port, default_model))
+        sys.stderr.flush()
+
+    server.serve(host, port, deps, on_bound=_on_bound)
+
+
+def cmd_claude(args, api_key, api_url, conf):
+    """Start Claude Code running ON Ambient: ensure the bridge is up, then exec `claude`
+    with ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY pointed at the loopback bridge. The real
+    Ambient key never reaches Claude Code — the bridge injects it upstream itself."""
+    launcher = _import_bridge("launcher")
+    if not shutil.which("claude"):
+        sys.exit("ambient: Claude Code ('claude') is not on PATH. Install it, then rerun "
+                 "`ambient claude` (https://claude.com/claude-code).")
+    config_dir = os.path.dirname(CONFIG_PATH)
+    _private_dir(config_dir)
+    state_path = launcher.bridge_state_path(config_dir)
+    state = launcher.read_bridge_state(state_path)
+    if state and launcher.bridge_is_live(state):
+        host, port, token = state.get("host", "127.0.0.1"), state["port"], state["token"]
+    else:
+        host = "127.0.0.1"
+        token = launcher.generate_local_token()
+        exe = os.path.realpath(__file__)
+        model_args = ["--model", args.model] if getattr(args, "model", None) else []
+        env = dict(os.environ, AMBIENT_BRIDGE_LOCAL_TOKEN=token)
+        log_path = os.path.join(config_dir, "bridge.log")
+        try:
+            logf = open(log_path, "w", encoding="utf-8")  # child stderr -> a bounded log
+            proc = subprocess.Popen(
+                [sys.executable, exe, "serve", "--port", "0"] + model_args, env=env,
+                stdout=subprocess.DEVNULL, stderr=logf,
+                start_new_session=(os.name != "nt"))
+        except OSError as exc:
+            sys.exit("ambient: couldn't start the Ambient bridge: {0}".format(exc))
+        # Wait for the child to BIND + publish OUR state (matching token), or report why.
+        port = None
+        waited = 0.0
+        while waited < 12.0:
+            if proc.poll() is not None:  # child died before starting — surface the reason
+                try:
+                    err = open(log_path, encoding="utf-8").read()[-800:]
+                except OSError:
+                    err = ""
+                sys.exit("ambient: the Ambient bridge exited before starting:\n{0}\n"
+                         "Run `ambient doctor`.".format(err))
+            st = launcher.read_bridge_state(state_path)
+            if st and st.get("token") == token and launcher.bridge_is_live(st):
+                port = st["port"]
+                break
+            time.sleep(0.2)
+            waited += 0.2
+        if port is None:
+            sys.exit("ambient: the Ambient bridge did not come up — run `ambient doctor`.")
+    env = dict(os.environ,
+               ANTHROPIC_BASE_URL="http://{0}:{1}".format(host, port),
+               ANTHROPIC_API_KEY=token)
+    # NEVER leak the real Ambient key (or the token's env source) into Claude Code or the
+    # tools it spawns — only the local bridge token authenticates to the loopback bridge.
+    env.pop("AMBIENT_API_KEY", None)
+    env.pop("AMBIENT_BRIDGE_LOCAL_TOKEN", None)
+    extra = [a for a in (getattr(args, "claude_args", None) or []) if a != "--"]
+    sys.stderr.write("Starting Claude Code on Ambient via the local bridge "
+                     "(http://{0}:{1}).\n".format(host, port))
+    if os.name == "nt":
+        completed = subprocess.run([shutil.which("claude") or "claude", *extra], env=env)
+        sys.exit(completed.returncode)
+    os.execvpe("claude", ["claude"] + extra, env)
+
+
 COMMANDS = (
     {"name": "version", "needs_key": False, "pre_env": True,
      "configure": _configure_version, "handler": "_cmd_version"},
@@ -12539,6 +12963,10 @@ COMMANDS = (
      "configure": _configure_build, "handler": "cmd_build"},
     {"name": "agent", "needs_key": True,
      "configure": _configure_agent, "handler": "cmd_agent"},
+    {"name": "serve", "needs_key": True,
+     "configure": _configure_serve, "handler": "cmd_serve"},
+    {"name": "claude", "needs_key": True,
+     "configure": _configure_claude, "handler": "cmd_claude"},
     {"name": "codex", "needs_key": False,
      "configure": _configure_codex, "handler": "_cmd_codex_keyless"},
 )
@@ -12574,7 +13002,7 @@ def _parse_args_with_stdin_dash(parser):
     injected into the prompt (its handler reads stdin as extra context); for
     every other command a lone trailing '-' is simply DROPPED — audit/map
     already auto-read piped stdin, and code takes no stdin — so the natural
-    order never errors on any command (Codex round 2). Any OTHER leftover is
+    order never errors on any command. Any OTHER leftover is
     still a real usage error, exactly like parse_args."""
     args, extras = parser.parse_known_args()
     if extras == ["-"]:
@@ -12587,21 +13015,54 @@ def _parse_args_with_stdin_dash(parser):
     return args
 
 
+def _bridge_root():
+    """Repo/plugin root holding the bundled `ambient_code` package (sibling of bin/).
+    Resolves the launcher symlink, so it is correct for the dev clone, the plugin
+    cache, and the installed `~/.local/bin/ambient` symlink alike."""
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _import_bridge(module):
+    """Import `ambient_code.<module>`, putting the package root on sys.path first.
+    Lazy (only the serve/claude lanes call it) so ordinary commands never pay the
+    import and a package problem can never break the rest of the CLI."""
+    import importlib
+    root = _bridge_root()
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    return importlib.import_module("ambient_code." + module)
+
+
 def main():
+    # Hidden, non-user fast-path: prove the bundled Anthropic-bridge package is
+    # importable via the realpath shim that `ambient serve`/`ambient claude` use.
+    # Runs before argparse so it never appears in help or collides with commands.
+    if len(sys.argv) == 2 and sys.argv[1] == "__bridge_import_check":
+        try:
+            for _m in ("errors", "bridge_policy", "tool_ids", "anthropic_request",
+                       "anthropic_response", "anthropic_sse", "catalog_map",
+                       "orchestrator", "upstream", "server", "launcher"):
+                _import_bridge(_m)
+        except Exception as exc:  # noqa: BLE001
+            print("bridge-import-FAIL: {0}".format(exc))
+            sys.exit(1)
+        print("bridge-import-ok")
+        sys.exit(0)
+
     parser = build_parser()
 
     # Never accept a key as a command-line argument: argv lands in shell
     # history and process listings. Refuse BEFORE argparse
     # can echo the token back in an 'unrecognized arguments' error. `config` is
     # covered too — none of its real values are secret-shaped, so a key-looking
-    # token there is a mistake to refuse, not to echo (Codex 2026-07-08).
+    # token there is a mistake to refuse, not to echo.
     if len(sys.argv) > 2 and sys.argv[1] in ("setup", "config", "settings"):
         _keyname = ("key", "api-key", "apikey", "ambient-api-key")
         for tok in sys.argv[2:]:
             # An explicit key ASSIGNMENT (`key=…`, `--api-key=…`) is never a valid
             # arg here — refuse it regardless of the value's SHAPE, so even a short
             # key can't be echoed by argparse's 'unrecognized arguments' error
-            # (Codex 2026-07-08).
+            #.
             if "=" in tok and tok.lstrip("-").split("=", 1)[0].strip().lower(
             ).replace("_", "-") in _keyname:
                 sys.exit(

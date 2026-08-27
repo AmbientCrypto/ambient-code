@@ -13,7 +13,6 @@ Run:  python3 tests/stress/live_smoke.py            # offline, CI-safe
       python3 tests/stress/live_smoke.py --live     # + real Kimi + GLM
 
 Each check maps to a stress-test finding (see
-docs/plans/2026-07-06-stress-test-remediation.md).
 """
 import importlib.machinery
 import importlib.util
@@ -74,7 +73,7 @@ def offline_checks():
     check("F01 recovered result reports exit 0", env["exit_code"] == 0)
 
     # F02 — an env-assigned secret in an arbitrarily-named file is refused,
-    #        even gutter-prefixed (the live-leak shape)
+    # even gutter-prefixed (the live-leak shape)
     check("F02 env secret detected (plain)",
           amb._line_has_secret(f"AWS_SECRET_ACCESS_KEY={HI}"))
     check("F02 env secret detected (gutter-prefixed)",

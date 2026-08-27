@@ -443,5 +443,56 @@ class TestFallbackFitThenCheapest(unittest.TestCase):
         self.assertIsNone(pick)
 
 
+class TestAskSystemAndDensitySizing(unittest.TestCase):
+    """--system and per-component density drive routing, the
+    single-shot/split decision, chunk sizing, and refusal — never a silent 400."""
+
+    def setUp(self):
+        self._logu = amb.log_usage
+        amb.log_usage = lambda *a, **k: None
+
+    def tearDown(self):
+        amb.log_usage = self._logu
+
+    def test_dense_argv_question_splits_instead_of_single_shot(self):
+        # A CJK question is UNDER the raw single-shot char limit but OVER it by
+        # effective (density-adjusted) size — it must SPLIT, not single-shot-then-400.
+        split_called = {}
+
+        def fake_mr(*a, **k):
+            split_called["yes"] = True
+            return ("merged", False, None)
+
+        def fake_complete(*a, **k):
+            split_called["single_shot"] = True
+            return ("answer", None, {"finish_reason": "stop"})
+
+        args = ask_args(model="cheap/ready", prompt=["中" * 60000])  # 60k CJK, ~2.6x
+        with patched(amb, safe_catalog=lambda *a, **k: routing_catalog(),
+                     run_map_reduce=fake_mr, complete=fake_complete,
+                     _gate_amount=lambda *a, **k: None, cost_gate_mr=lambda *a, **k: None), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            amb.cmd_ask(args, "key-abcdef123456", "https://x", {})
+        self.assertTrue(split_called.get("yes"), "dense question must map-reduce split")
+        self.assertNotIn("single_shot", split_called)
+
+    def test_huge_system_leaves_no_room_refuses_before_billing(self):
+        # --system alone dwarfs a tiny model's window: refuse honestly BEFORE any
+        # cost gate or network call, never send guaranteed-oversized chunks.
+        billed = {}
+        args = ask_args(model="tiny/ready", prompt=["hi"], system="x" * 200000)
+        with patched(amb, safe_catalog=lambda *a, **k: routing_catalog(),
+                     complete=lambda *a, **k: billed.setdefault("complete", True),
+                     run_map_reduce=lambda *a, **k: billed.setdefault("mr", True),
+                     _gate_amount=lambda *a, **k: billed.setdefault("gate", True),
+                     cost_gate_mr=lambda *a, **k: billed.setdefault("gate", True)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                amb.cmd_ask(args, "key-abcdef123456", "https://x", {})
+        self.assertEqual(billed, {}, "must refuse before any gate/network call")
+
+
 if __name__ == "__main__":
     unittest.main()

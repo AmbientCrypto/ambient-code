@@ -1,6 +1,6 @@
-"""P6 — polish batch: F05a (unknown-model classification), F05b (near-duplicate
+"""polish batch: F05a (unknown-model classification), F05b (near-duplicate
 finding merge), F05d (savings receipt under --json), F04 (catalog count
-consistency). See docs/plans/2026-07-06-stress-test-remediation.md."""
+consistency)."""
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -39,7 +39,7 @@ class TestV25Polish(unittest.TestCase):
         self.assertEqual(cat, "unknown")
 
     # --- F05b: conservative title match — NEVER false-merge distinct
-    # findings (the fuzzy-overlap version was reverted; Codex showed it
+    # findings (the fuzzy-overlap version was reverted; it
     # dropped a distinct SQL-injection finding, which is worse than a
     # cosmetic duplicate.)
     def test_distinct_bugs_stay_separate(self):
@@ -50,7 +50,7 @@ class TestV25Polish(unittest.TestCase):
         )
 
     def test_distinct_injection_sites_do_not_false_merge(self):
-        # Codex's counterexample: two DIFFERENT injection sites must stay
+        # a counterexample: two DIFFERENT injection sites must stay
         # separate.
         a = ("sql", "injection", "in", "search")
         b = ("sql", "injection", "in", "login")
@@ -69,7 +69,7 @@ class TestV25Polish(unittest.TestCase):
         self.assertIn("[ambient z-ai/glm-5.2", err.getvalue())
 
     def test_receipt_redacts_key_if_it_ever_appears(self):
-        # Codex: the receipt printed `model` unredacted; if model somehow
+        # the receipt printed `model` unredacted; if model somehow
         # carries a key it must be scrubbed. redact() is applied now.
         key = "sk-secretkey-abcdef1234567890"
         err = io.StringIO()

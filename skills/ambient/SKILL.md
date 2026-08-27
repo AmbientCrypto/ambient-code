@@ -27,6 +27,7 @@ always points at the active install, so never hardcode a path.
 | `/ambient chat` | The user's interactive REPL (`ambient chat` in THEIR terminal — it requires a TTY; scripted use routes to `ambient ask`). Streams replies, prints a per-turn token receipt, `/model` switches models mid-session (explicit + printed), `/clear` resets history, Ctrl-C interrupts only the current turn. Every turn is cost-gated + fleet-reserved. |
 | `/ambient build <task>` | Native build lane: write a precise brief, run `ambient build "<brief>" --dir <target> [-f context] --json --apply --yes`, read the manifest, review every file, run tests yourself. Anything beyond a trivial build → dispatch it in the BACKGROUND and relay progress (see **Long-running dispatch** — never wrap a real build in a Bash timeout). |
 | `/ambient agent` | Interactive opencode TUI for the user (`ambient agent`); headless one-offs via `ambient agent run "task"`. The key enters opencode's process env — never ask the agent to print its environment. |
+| `/ambient claude` | **Run Claude Code ITSELF on Ambient models.** Tell the user to run `ambient claude` in THEIR terminal (it starts the local reliability bridge, then launches a fresh `claude` pointed at it). This routes a WHOLE Claude Code session — subagents included — through the bridge, which sanitizes tool ids, rebuilds streaming, floors per-model budgets, and absorbs 429 bursts, so it never hits the `tool_use.id` brick or the overflow-400 loop. The real Ambient key never reaches Claude Code (the bridge injects it upstream). It starts a NEW `claude` process — you can't repoint the one you're in. See **Run Claude Code on Ambient** below. |
 | `/ambient curate ...` | User model curation: `ambient curate` (status) / `hide <id\|glob>` / `show <id>` / `only <ids>` / `note <id> "text"` / `reset`. Curation shapes menus + automatic selection only — explicit `-m` always works. |
 | `/ambient setup` | First-run setup below (key rotation: `setup --force`; removal: `setup --remove`). |
 | `/ambient settings` | **Settings** sub-panel below — one place to see your API-key status (and where to update it) and change streaming, model fallback, and other prefs, without touching env vars. |
@@ -548,3 +549,88 @@ both lanes; GLM-5.2 selectable while its network capacity ramps up).
 is Responses-API-only; Ambient's `/v1/responses` rejects its tool types) — config is
 staged in `~/.codex/` for when Ambient relaxes the validator; `ambient codex` prints
 the details.
+
+## Run Claude Code on Ambient (the reliability bridge)
+
+`ambient claude` runs Claude Code ITSELF on Ambient's open models instead of Anthropic.
+It starts a local, loopback-only reliability **bridge** (`ambient serve`) and launches a
+fresh `claude` with `ANTHROPIC_BASE_URL` pointed at it. The bridge speaks the Anthropic
+Messages API to Claude Code and translates every turn to Ambient's clean OpenAI
+`/v1/chat/completions` path — so it routes AROUND the known-broken server-side
+`/v1/messages` gateway. In one place it:
+
+- **sanitizes tool-call ids** (reversibly): Ambient models return ids like
+  `functions.Read:0` that are illegal as an Anthropic `tool_use.id`; the bridge encodes
+  them so Claude Code only ever sees legal ids that round-trip. This is what stops the
+  session from bricking on the turn after its first tool call.
+- **rebuilds streaming**: it streams the clean OpenAI path and synthesizes the Anthropic
+  SSE, with an early `message_start` + keepalive pings so a long reasoning turn never
+  idle-times-out.
+- **turns Ambient's opaque overflow 400 into the exact `prompt is too long` error**
+  Claude Code's auto-compaction recognizes, so a full context compacts and continues
+  instead of 400-looping forever.
+- **floors per-model output budgets + escalates on an empty answer** (GLM/Kimi), and
+  **paces + backs off on 429s** with a bounded concurrency gate, so a subagent fan-out
+  queues instead of storming the network.
+
+**What to tell the user:** run `ambient claude` in your own terminal (needs `ambient
+setup` once for the key, and `claude` on PATH). It routes your whole session — subagents
+included — onto Ambient tokens. The Ambient key never reaches Claude Code; only a random
+local token authenticates to the loopback bridge. `ambient claude -m <model>` sets the
+default Ambient model; a model Claude Code names maps to that default. It launches a NEW
+`claude` (you cannot repoint the session you are in). Model choice stays SACRED — the
+bridge honors the model you set and never silently swaps it beyond a serving-model
+substitution it announces. `ambient serve` runs the bridge alone (for advanced/manual
+`ANTHROPIC_BASE_URL` setups).
+
+## Plan mode
+
+Claude Code plan mode blocks `Edit`/`Write`, but `ambient` mutating actions run via the
+Bash tool, which plan mode does not intercept — so honor plan mode yourself. **While in
+plan mode, only dispatch READ-ONLY Ambient actions**: `ambient ask`, a review `ambient
+audit` (NOT `audit --install-hook`), `ambient map`, `ambient models`, `ambient doctor`,
+and status reads (`ambient mode`, `ambient settings`, `ambient curate` with no verb).
+**Fold any MUTATING action into the plan for after approval** — `ambient build … --apply`,
+`ambient code` (writing), `ambient agent`, `ambient serve`/`ambient claude` (they spawn a
+process / a new session), `ambient settings/config set`, `ambient use`, `ambient curate
+hide|show|only|note|reset`, and mode toggles (`ambient mode on|takeover`). A `PreToolUse`
+guardrail (`hooks/pre-ambient.sh`) denies the obvious mutating forms while
+`permission_mode` is `plan` — a best-effort BACKSTOP; the contract above is the real rule,
+so honor it even for a form the hook may miss. If a mutating action is genuinely needed, propose it as a plan step, don't
+run it. (Running Claude Code ON Ambient via the bridge does NOT change plan mode — plan
+mode is a Claude Code feature that works the same regardless of which model backs it.)
+
+## Self-healing (bridge + launcher) — bounded, never-worsen
+
+**The bridge already self-heals the common cases TRANSPARENTLY — you rarely need to act.**
+It runs on Ambient's live catalog, so a model added/removed or a window changed is picked
+up within ~a minute automatically. If a model's REAL context window shrinks below what the
+catalog still claims (Ambient is an inference provider — this happens), the bridge LEARNS a
+lower ceiling from the first over-limit 400 and compacts before re-hitting it, recovering
+if the window grows back — the run just keeps going. If your picked model goes cold or
+vanishes, the bridge substitutes a serving one. None of this needs Claude's intervention or
+changes the skill's design.
+
+For the rest — config-level problems the bridge can't fix itself — repair SAFELY, never
+destructively. Flow:
+
+1. Run `ambient doctor` and read its PASS/FAIL + `DIAGNOSIS` line. (`ambient doctor` also
+   reports whether the local bridge is running and reachable.)
+2. Map exactly ONE failing check to its ONE whitelisted repair, then re-run `ambient
+   doctor` to confirm it flipped to PASS. If it did not — or a new FAIL appeared — STOP
+   and tell the user; do not try a second unrelated "fix." At most one attempt per check.
+   - `launcher FAIL` (stale/dangling `~/.local/bin/ambient`) → `ambient link` (it only
+     ever touches a symlink it owns).
+   - `bridge dead / unreachable` → the bridge is auto-restarted by the next `ambient
+     claude` and by the SessionStart hook; a manual restart is `ambient serve` (or just
+     rerun `ambient claude`). Its startup log is `~/.config/ambient/bridge.log`.
+   - `config perms` → the CLI self-heals these to 0600 on its own; nothing to do.
+   - `key MISSING` / `auth FAIL` → **STOP and ask the user** to run `ambient setup` (or
+     `setup --force` to rotate). NEVER auto-create, rotate, or delete a key or keychain
+     entry.
+   - `model not serving` → not a fault: Ambient is on-demand. Surface the serving
+     alternatives `ambient models` names; change nothing.
+3. **Never** set or persist `AMBIENT_API_URL`/`trust-url` (that is the key-exfil guard),
+   never wipe `~/.config/ambient/`, never edit the key. All config writes go through the
+   CLI's own commands (`setup`/`use`/`mode`/`settings`), never hand-edited files. When in
+   doubt, report the `ambient doctor` diagnosis and let the user decide.

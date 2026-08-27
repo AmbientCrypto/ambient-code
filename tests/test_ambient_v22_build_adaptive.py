@@ -1,7 +1,6 @@
-"""P3 — build-lane adaptation: a model that won't emit a structured plan gets a
+"""build-lane adaptation: a model that won't emit a structured plan gets a
 downgrade retry, an actionable error naming the reliable model, and its failure
-is LEARNED. A capable model is recorded ok. No silent model swap. See
-docs/plans/2026-07-06-stress-test-remediation.md."""
+is LEARNED. A capable model is recorded ok. No silent model swap."""
 import argparse
 import contextlib
 import importlib.machinery
@@ -137,7 +136,7 @@ class TestV22BuildAdaptive(unittest.TestCase):
         _run_build("stubborn/model", prose_only)  # second failure => unreliable
         assert amb.cap_state("stubborn/model", "build_plan") == "unreliable"
 
-    # --- Codex-found build bugs ---------------------------------------------
+    # --- build bugs ---------------------------------------------
     def test_rf_ladder_is_full_and_unique_for_capable_model(self):
         class P:
             features = ["structured_outputs", "json_mode"]
@@ -200,7 +199,7 @@ class TestV22BuildAdaptive(unittest.TestCase):
         assert amb.cap_state("requested/model", "build_plan") != "ok"
 
     def test_rate_limit_aborts_immediately_not_downgrade(self):
-        # Codex round 2: only a generic 400 ('unknown') is downgradeable; a rate
+        # only a generic 400 ('unknown') is downgradeable; a rate
         # limit must abort on the first attempt, not burn the ladder + record False.
         calls = []
 
@@ -212,12 +211,12 @@ class TestV22BuildAdaptive(unittest.TestCase):
         assert code == 1 and len(calls) == 1
         env = json.loads(out)
         assert env["category"] == "rate"          # surfaces the REAL cause
-        # Codex round 3: an infra failure must NOT poison the model's build_plan
+        # an infra failure must NOT poison the model's build_plan
         # capability (it isn't the model failing to plan).
         assert amb.cap_state("m", "build_plan") == "unknown"
 
     def test_malformed_completion_meta_does_not_crash(self):
-        # Codex round 2: a non-dict _b (e.g. a string) must not crash served-model
+        # a non-dict _b (e.g. a string) must not crash served-model
         # attribution.
         plan = json.dumps({"plan": [{"path": "tool.py", "purpose": "x"}]})
 

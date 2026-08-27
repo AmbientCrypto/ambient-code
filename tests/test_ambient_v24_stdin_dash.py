@@ -1,6 +1,6 @@
 """P4/F03 — the stdin '-' sentinel must work in ANY argument order, including
 the natural `ask "prompt" -m MODEL -` that argparse orphaned into
-'unrecognized arguments: -'. See docs/plans/2026-07-06-stress-test-remediation.md."""
+'unrecognized arguments: -'."""
 import importlib.machinery
 import importlib.util
 import os
@@ -50,7 +50,7 @@ class StdinDashSentinelTests(unittest.TestCase):
             self._parse(["ask", "hi", "--totally-bogus-flag"])
 
     def test_trailing_dash_dropped_not_errored_on_other_commands(self):
-        # Codex round 2: the natural order must not exit 64 on code/audit/map either.
+        # the natural order must not exit 64 on code/audit/map either.
         for argv in [
             ["audit", "file.py", "-m", "z-ai/glm-5.2", "-"],   # audit auto-reads stdin
             ["code", "build a thing", "-m", "z-ai/glm-5.2", "-"],  # code takes no stdin

@@ -110,6 +110,33 @@ class TestApplyBudget(unittest.TestCase):
                                  p.context_length + 1)
 
 
+class TestCacheKeyEndpoint(unittest.TestCase):
+    """P0 #5: a cached answer must never be served across a repointed
+    AMBIENT_API_URL (same model id + prompt, different gateway)."""
+
+    def setUp(self):
+        self._ep = amb._ACTIVE_ENDPOINT
+
+    def tearDown(self):
+        amb._ACTIVE_ENDPOINT = self._ep
+
+    def _key(self):
+        return amb._cache_key("m", "sys", "chunk", 1000, 0.1)
+
+    def test_different_endpoints_get_different_keys(self):
+        amb._ACTIVE_ENDPOINT = "https://api.ambient.xyz"
+        default_key = self._key()
+        amb._ACTIVE_ENDPOINT = "https://my-gateway.example/v1"
+        self.assertNotEqual(default_key, self._key())
+
+    def test_default_endpoint_key_is_stable_across_this_upgrade(self):
+        # The DEFAULT endpoint folds in nothing, so pre-fix cache entries stay valid.
+        amb._ACTIVE_ENDPOINT = amb.DEFAULT_API_URL
+        with_default = self._key()
+        amb._ACTIVE_ENDPOINT = None
+        self.assertEqual(with_default, self._key())
+
+
 class TestPackChunks(unittest.TestCase):
     def test_every_chunk_within_budget(self):
         text = "\n".join(f"line {i}" for i in range(50000))

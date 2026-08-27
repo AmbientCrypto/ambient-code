@@ -1,8 +1,7 @@
-"""P4 — credential tripwire hardening (F02, security, deterministic). A sensitive
+"""credential tripwire hardening (F02, security, deterministic). A sensitive
 keyword embedded in an ALL-CAPS env identifier before '='/':' with a high-entropy
 value must be caught, even in an arbitrarily-named file. False positives (public
-keys, short values) must NOT trip. Linear-time (no ReDoS). See
-docs/plans/2026-07-06-stress-test-remediation.md."""
+keys, short values) must NOT trip. Linear-time (no ReDoS)."""
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -65,7 +64,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIs(amb._line_has_secret(line), False)
 
-    # --- Codex-found bypasses (must all be caught now) --------------------
+    # --- bypasses (must all be caught now) --------------------
     def test_codex_bypasses_now_caught(self):
         for line in [
             '{"secret": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"}',   # base64 / and +
@@ -77,7 +76,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIs(amb._line_has_secret(line), True)
 
-    # --- Codex round 3: JSON / lowercase / tab-gutter / hash-FP ----------
+    # --- JSON / lowercase / tab-gutter / hash-FP ----------
     def test_round3_secret_shapes_are_caught(self):
         for line in [
             '{"AWS_SECRET_ACCESS_KEY":"wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"}',
@@ -100,7 +99,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIs(amb._line_has_secret(line), False)
 
-    # --- Codex round 4 ----------------------------------------------------
+    # ------------------------------------------------------------------
     def test_round4_bypasses_now_caught(self):
         for line in [
             "ok=1 AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",  # 2nd assignment
@@ -121,7 +120,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIs(amb._line_has_secret(line), False)
 
-    # --- Codex round 5 ----------------------------------------------------
+    # ------------------------------------------------------------------
     def test_round5_bypasses_now_caught(self):
         for line in [
             "TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV",  # JWT
@@ -139,7 +138,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIs(amb._line_has_secret(line), False)
 
-    # --- Codex round 6 ----------------------------------------------------
+    # ------------------------------------------------------------------
     def test_round6_azure_connection_string_caught(self):
         for line in [
             ('"AzureWebJobsStorage": "DefaultEndpointsProtocol=https;AccountName=devstore;'
@@ -158,7 +157,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIs(amb._line_has_secret(line), False)
 
-    # --- Codex round 7 ----------------------------------------------------
+    # ------------------------------------------------------------------
     def test_round7_azure_sas_signature_caught(self):
         line = ('AZURE_STORAGE_CONNECTION_STRING="BlobEndpoint=https://acct.blob.core.'
                 'windows.net/;SharedAccessSignature=sv=2020-08-04&ss=b&srt=sco&sp=rwdlac'
@@ -291,7 +290,7 @@ class TestAmbientV23Tripwire(unittest.TestCase):
                 self.assertIs(amb._line_has_secret(line), False)
 
     def test_tab_gutter_bypass_blocked(self):
-        # Codex round 3: an inner fake gutter with a TAB survived the space-only strip.
+        # an inner fake gutter with a TAB survived the space-only strip.
         chunks = [("x.txt", "   7| \t12| AWS_SECRET_ACCESS_KEY="
                             "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY\n")]
         buf = io.StringIO()

@@ -18,6 +18,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -136,11 +137,12 @@ class TestF15UsageSkipsNonDictLines(unittest.TestCase):
             return out.getvalue()
 
     def test_non_dict_lines_do_not_crash(self):
+        recent = int(time.time())  # within the `usage --days` window (was a fixed 2026 date)
         body = ('42\n'
                 '"garbage"\n'
                 '[1, 2, 3]\n'
-                '{"ts": 1783357893, "model": "m", "in": 10, "out": 20, '
-                '"cost": 0.001, "ref": [3.0, 15.0]}\n')
+                '{"ts": %d, "model": "m", "in": 10, "out": 20, '
+                '"cost": 0.001, "ref": [3.0, 15.0]}\n' % recent)
         try:
             printed = self._run_usage(body)
         except AttributeError as err:  # the pre-fix failure mode

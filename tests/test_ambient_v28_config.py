@@ -1,6 +1,5 @@
 """v1.3.0 — `ambient config` settings surface (2026-07-08). Pure stdlib unittest
-(the canonical CI runner has no pytest). See
-docs/plans/2026-07-08-production-hardening-and-features.md.
+(the canonical CI runner has no pytest).
 
 Covers: set/unset round-trips (each knob's real resolver honors the write), boolean
 normalization, validation rejection (exit 64, file untouched), unknown/key-ish name
@@ -198,7 +197,7 @@ class UnknownAndKeyNameTests(_ConfigCase):
 
     def test_key_equals_value_form_refused_without_echo(self):
         # `config set key=<SECRET>` must be read as the name `key` (value dropped),
-        # refused with the setup pointer, and NEVER echo the secret (Codex A #1).
+        # refused with the setup pointer, and NEVER echo the secret.
         err = io.StringIO()
         with self.assertRaises(SystemExit) as cm, \
                 contextlib.redirect_stderr(err), \
@@ -246,7 +245,7 @@ class UnknownAndKeyNameTests(_ConfigCase):
 class UnsetRejectsValueTests(_ConfigCase):
     def test_unset_with_extra_value_is_rejected_and_not_destructive(self):
         # `config unset streaming off` must NOT silently delete AMBIENT_PROGRESS
-        # while ignoring the stray value (Codex A #2).
+        # while ignoring the stray value.
         self.config("set", "streaming", "off")
         with self.assertRaises(SystemExit) as cm:
             self.config("unset", "streaming", "off")
@@ -256,7 +255,7 @@ class UnsetRejectsValueTests(_ConfigCase):
 
 class ArgvSecretGuardTests(_ConfigCase):
     """The pre-argparse guard in main() also covers `config`, so a key-shaped token
-    is refused BEFORE argparse (or any handler) can echo it (Codex A #1, --flag form)."""
+    is refused BEFORE argparse (or any handler) can echo it (--flag form)."""
 
     def _guard(self, argv):
         with patched(amb.sys, argv=argv):
@@ -277,7 +276,7 @@ class ArgvSecretGuardTests(_ConfigCase):
 
     def test_short_key_assignment_refused_regardless_of_shape(self):
         # A SHORT key value must still be refused before argparse can echo it —
-        # a `key=`/`--api-key=` assignment is never valid here (Codex re-audit).
+        # a `key=`/`--api-key=` assignment is never valid here.
         for argv in (["ambient", "config", "--key=short"],
                      ["ambient", "config", "set", "key=short"],
                      ["ambient", "config", "--api-key=abc123"],

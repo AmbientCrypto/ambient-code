@@ -1,7 +1,5 @@
-"""v1.1.x production hardening — regression tests for the 8 fixes from the
-Codex + team-share Workflow audits (2026-07-08). Pure stdlib unittest (the
-canonical CI runner has no pytest). See
-docs/plans/2026-07-08-production-hardening-and-features.md."""
+"""v1.1.x production hardening — regression tests for the hardening fixes.
+Pure stdlib unittest (the canonical CI runner has no pytest)."""
 import argparse
 import contextlib
 import importlib.machinery

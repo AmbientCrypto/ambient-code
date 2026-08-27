@@ -1,6 +1,5 @@
-"""P2 — the keystone: recover audit findings from a model that ignored the JSON
-schema but followed the prose format (GLM 5.2), and LEARN from it. See
-docs/plans/2026-07-06-stress-test-remediation.md."""
+"""the keystone: recover audit findings from a model that ignored the JSON
+schema but followed the prose format (GLM 5.2), and LEARN from it."""
 import contextlib
 import importlib.machinery
 import importlib.util
@@ -117,7 +116,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert amb.parse_prose_findings("hello, this is not an audit at all") is None
         assert amb.parse_prose_findings("") is None
 
-    # --- Codex-found prose bugs --------------------------------------------
+    # --- prose bugs --------------------------------------------
     def test_bulleted_finding_header_falls_to_raw_not_faked_clean(self):
         # A '- ' bulleted finding header is a diff/list marker we DON'T parse as a
         # live finding — but its severity+confidence+file:line means we must NOT
@@ -134,7 +133,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert amb.parse_prose_findings(txt) is None
 
     def test_last_verdict_wins_over_quoted_one(self):
-        # Codex: a 'Verdict: SHIP' quoted in a scenario preceded the real verdict.
+        # a 'Verdict: SHIP' quoted in a scenario preceded the real verdict.
         txt = ("HIGH (confidence: HIGH) — a.py:3 — bug.\n"
                "Scenario: the doc says 'Verdict: SHIP' but it's wrong.\n"
                "Verdict: FIX FIRST\n")
@@ -142,14 +141,14 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj["verdict"] == "FIX FIRST"
 
     def test_clean_ship_prose_mentioning_severity_is_not_rejected(self):
-        # Codex round 2: "no HIGH (confidence: HIGH) issues remain" has no file:line
+        # "no HIGH (confidence: HIGH) issues remain" has no file:line
         # → it is a real clean SHIP, not an unparseable finding.
         txt = "No defects found. No HIGH (confidence: HIGH) issues remain.\nVerdict: SHIP\n"
         obj = amb.parse_prose_findings(txt)
         assert obj is not None and obj["findings"] == [] and obj["verdict"] == "SHIP"
 
     def test_diff_plus_line_is_not_parsed_as_finding(self):
-        # Codex round 2: a quoted '+ HIGH (confidence…) — f:1' inside a diff must not
+        # a quoted '+ HIGH (confidence…) — f:1' inside a diff must not
         # become a live finding (it now falls to the safe raw envelope instead).
         txt = ("```diff\n+ HIGH (confidence: HIGH) — README.md:1 — old quoted output\n"
                "```\nVerdict: SHIP\n")
@@ -157,7 +156,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj is None or len(obj["findings"]) == 0
 
     def test_numbered_finding_is_parsed_not_faked_clean(self):
-        # Codex round 3: '1. HIGH …' numbered findings were dropped, then faked a
+        # '1. HIGH …' numbered findings were dropped, then faked a
         # clean SHIP. They must now parse as real findings.
         txt = ("1. HIGH (confidence: HIGH) — a.py:1 — auth bypass.\n"
                "Scenario: x.\nFix: y.\nVerdict: SHIP\n")
@@ -174,7 +173,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj is not None and obj["findings"] == [] and obj["verdict"] == "SHIP"
 
     def test_severity_with_fileline_biases_to_raw_not_fake_clean(self):
-        # Codex round 8: a line with severity + confidence + file:line (any
+        # a line with severity + confidence + file:line (any
         # separator) can't be reliably told apart from a real colon/comma finding —
         # so we bias to the SAFE raw envelope rather than risk faking a clean SHIP.
         for txt in (
@@ -185,20 +184,20 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert amb.parse_prose_findings(txt) is None
 
     def test_colon_separated_finding_parses(self):
-        # Codex round 4/12: a colon-separated finding now PARSES (better than raw).
+        # /12: a colon-separated finding now PARSES (better than raw).
         obj = amb.parse_prose_findings(
             "HIGH (confidence: HIGH): a.py:7 — hidden real defect\nVerdict: SHIP\n")
         assert obj is not None and len(obj["findings"]) == 1
         assert obj["findings"][0]["file"] == "a.py"
 
     def test_at_style_finding_does_not_fake_clean(self):
-        # Codex round 4: an 'at'-style finding (no separator char before file:line)
+        # an 'at'-style finding (no separator char before file:line)
         # falls to the safe raw envelope rather than faking a clean SHIP.
         assert amb.parse_prose_findings(
             "HIGH (confidence: HIGH) at a.py:7 — hidden real defect\nVerdict: SHIP\n") is None
 
     def test_space_after_colon_finding_does_not_fake_clean(self):
-        # Codex round 5: 'a.py: 7' (space after colon) must still parse / not fake clean.
+        # 'a.py: 7' (space after colon) must still parse / not fake clean.
         txt = ("HIGH (confidence: HIGH) — a.py: 7 — hidden real defect\n"
                "Scenario: x.\nVerdict: SHIP\n")
         obj = amb.parse_prose_findings(txt)
@@ -206,7 +205,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj["findings"][0]["line"] == 7
 
     def test_markdown_heading_finding_does_not_fake_clean(self):
-        # Codex round 6: a '### HIGH …' Markdown-heading finding must parse, not
+        # a '### HIGH …' Markdown-heading finding must parse, not
         # fake a clean SHIP.
         txt = ("### HIGH (confidence: HIGH) — a.py:7 — auth bypass.\n"
                "Scenario: unauthenticated request succeeds.\n"
@@ -216,14 +215,14 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj["findings"][0]["file"] == "a.py"
 
     def test_labeled_heading_finding_does_not_fake_clean(self):
-        # Codex round 7: '### Finding 1: HIGH …' (severity not first) must not fake
+        # '### Finding 1: HIGH …' (severity not first) must not fake
         # a clean SHIP — it falls to the safe raw envelope.
         txt = ("### Finding 1: HIGH (confidence: HIGH) — a.py:7 — auth bypass.\n"
                "Scenario: x.\nFix: y.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_confidence_last_finding_does_not_fake_clean(self):
-        # Codex round 9/11: a header with confidence AFTER the file:line must not
+        # /11: a header with confidence AFTER the file:line must not
         # fake a clean SHIP. Since confidence is now optional in the parser, this
         # PARSES as a real finding (even better than falling to raw).
         txt = ("HIGH — a.py:7 — auth bypass, unauthenticated access (confidence: HIGH).\n"
@@ -233,7 +232,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj["findings"][0]["file"] == "a.py"
 
     def test_unparenthesized_confidence_finding_does_not_fake_clean(self):
-        # Codex round 10: 'HIGH — Confidence: HIGH — a.py:7 — …' (confidence not in
+        # 'HIGH — Confidence: HIGH — a.py:7 — …' (confidence not in
         # parens) must not fake a clean SHIP.
         txt = ("HIGH — Confidence: HIGH — a.py:7 — auth bypass.\nVerdict: SHIP\n")
         obj = amb.parse_prose_findings(txt)
@@ -243,7 +242,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj["findings"][0]["file"] == "a.py"
 
     def test_finding_without_confidence_parses_not_faked_clean(self):
-        # Codex round 11: a finding that omits the confidence label entirely must
+        # a finding that omits the confidence label entirely must
         # still parse (not fake a clean SHIP).
         txt = ("HIGH — a.py:7 — auth bypass lets unauthenticated users read data.\n"
                "Scenario: x.\nFix: y.\nVerdict: SHIP\n")
@@ -253,14 +252,14 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj["findings"][0]["confidence"] == "HIGH"
 
     def test_colon_no_confidence_finding_parses(self):
-        # Codex round 12: 'HIGH: file:line — title' (no confidence, colon separator)
+        # 'HIGH: file:line — title' (no confidence, colon separator)
         # must parse, not fake a clean SHIP.
         obj = amb.parse_prose_findings("HIGH: app/auth.py:42 — auth bypass\nVerdict: SHIP\n")
         assert obj is not None and len(obj["findings"]) == 1
         assert obj["findings"][0]["file"] == "app/auth.py"
 
     def test_no_confidence_labeled_findings_do_not_fake_clean(self):
-        # Codex round 13: no-confidence labeled/bulleted finding headers the parser
+        # no-confidence labeled/bulleted finding headers the parser
         # can't reach must fall to raw, not fake a clean SHIP.
         for txt in [
             "### Finding 1: HIGH — app/auth.py:42 — auth bypass\nVerdict: SHIP\n",
@@ -270,33 +269,33 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert amb.parse_prose_findings(txt) is None
 
     def test_fieldlist_multiline_finding_does_not_fake_clean(self):
-        # Codex round 14: a field-list finding (Severity:/File:/Line: on separate
+        # a field-list finding (Severity:/File:/Line: on separate
         # lines) must not fake a clean SHIP.
         txt = ("Finding 1:\nSeverity: HIGH\nConfidence: HIGH\nFile: app/auth.py\n"
                "Line: 42\nDefect: auth bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_fieldlist_with_file_line_label_does_not_fake_clean(self):
-        # Codex round 15: a field-list finding with 'File: a.py:42' (file:line on the
+        # a field-list finding with 'File: a.py:42' (file:line on the
         # File line, not a separate 'Line:') must not fake a clean SHIP.
         txt = ("Finding:\nSeverity: HIGH\nFile: app/auth.py:42\n"
                "Defect: auth bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_fieldlist_location_line_word_does_not_fake_clean(self):
-        # Codex round 16: 'Location: app/auth.py line 42' ('line 42', no colon).
+        # 'Location: app/auth.py line 42' ('line 42', no colon).
         txt = ("Finding:\nSeverity: HIGH\nLocation: app/auth.py line 42\n"
                "Defect: auth bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_fieldlist_plural_lines_range_does_not_fake_clean(self):
-        # Codex round 17: 'Location: app/auth.py lines 42-45' (plural, range).
+        # 'Location: app/auth.py lines 42-45' (plural, range).
         txt = ("Finding:\nSeverity: HIGH\nLocation: app/auth.py lines 42-45\n"
                "Defect: bug.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_fieldlist_any_location_phrasing_does_not_fake_clean(self):
-        # Codex round 15-18: any location phrasing in a field-list finding.
+        # any location phrasing in a field-list finding.
         for loc in [
             "Location: app/auth.py, line number 42",
             "Location: app/auth.py lines 42-45",
@@ -308,7 +307,7 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert amb.parse_prose_findings(txt) is None
 
     def test_fieldlist_standalone_line_number_does_not_fake_clean(self):
-        # Codex round 19: standalone 'Line number 42' (no colon, no File: label).
+        # standalone 'Line number 42' (no colon, no File: label).
         txt = ("Finding:\nSeverity: HIGH\nLine number 42\n"
                "Defect: empty token bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
@@ -323,19 +322,19 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert obj is not None and obj["findings"] == [] and obj["verdict"] == "SHIP"
 
     def test_dash_separated_fieldlist_does_not_fake_clean(self):
-        # Codex round 20: a field-list using dash separators ('Severity - HIGH').
+        # a field-list using dash separators ('Severity - HIGH').
         txt = ("Finding 1:\nSeverity - HIGH\nConfidence - HIGH\nFile - app/auth.py\n"
                "Line number 42\nDefect: auth bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_dash_bulleted_fieldlist_does_not_fake_clean(self):
-        # Codex round 21: a '- ' dash-bulleted field-list finding.
+        # a '- ' dash-bulleted field-list finding.
         txt = ("Finding 1:\n- Severity: HIGH\n- Confidence: HIGH\n- File: app/auth.py\n"
                "- Line: 42\n- Defect: auth bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
 
     def test_path_line_word_finding_parses(self):
-        # Codex round 22: 'app/auth.py line 42' (word 'line', no colon) now parses.
+        # 'app/auth.py line 42' (word 'line', no colon) now parses.
         o = amb.parse_prose_findings(
             "HIGH (confidence: HIGH) — app/auth.py line 42 — auth bypass.\nVerdict: SHIP\n")
         assert o is not None and len(o["findings"]) == 1
@@ -346,14 +345,14 @@ class ProseRecoveryTests(unittest.TestCase):
         assert o is not None and o["findings"] == [] and o["verdict"] == "SHIP"
 
     def test_github_anchor_finding_parses(self):
-        # Codex round 23: 'app/auth.py#L42' GitHub-style anchor.
+        # 'app/auth.py#L42' GitHub-style anchor.
         o = amb.parse_prose_findings(
             "HIGH (confidence: HIGH) — app/auth.py#L42 — auth bypass.\nVerdict: SHIP\n")
         assert o is not None and len(o["findings"]) == 1
         assert o["findings"][0]["file"] == "app/auth.py" and o["findings"][0]["line"] == 42
 
     def test_all_single_line_fileline_notations_parse(self):
-        # Codex round 22-24: every file:line notation must parse, not fake clean.
+        # every file:line notation must parse, not fake clean.
         for loc in ["line number 42", "line no. 42", "line no 42", "#L42", "line 42", ":42"]:
             with self.subTest(loc=loc):
                 sep = "" if loc[0] in ":#" else " "
@@ -363,7 +362,7 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert o["findings"][0]["line"] == 42
 
     def test_bold_markdown_fieldlist_does_not_fake_clean(self):
-        # Codex round 25: markdown-bold field labels ('**Severity:** HIGH').
+        # markdown-bold field labels ('**Severity:** HIGH').
         txt = ("Finding 1:\n**Severity:** HIGH\n**File:** app/auth.py\n**Line:** 42\n"
                "**Defect:** auth bypass.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
@@ -397,7 +396,7 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert amb.parse_prose_findings(txt) is None
 
     def test_markdown_table_finding_does_not_fake_clean(self):
-        # Codex round 27: a Markdown table finding row.
+        # a Markdown table finding row.
         txt = ("| Severity | File | Line | Defect |\n|---|---|---|---|\n"
                "| HIGH | app/auth.py | 42 | Auth bypass. |\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
@@ -408,7 +407,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert obj is not None and obj["findings"] == [] and obj["verdict"] == "SHIP"
 
     def test_any_finding_overrides_ship_verdict(self):
-        # Codex round 28: a SHIP verdict can't coexist with ANY finding.
+        # a SHIP verdict can't coexist with ANY finding.
         for sev, want in [("HIGH", "FIX FIRST"), ("CRITICAL", "FIX FIRST"),
                           ("MEDIUM", "NEEDS WORK"), ("LOW", "NEEDS WORK")]:
             with self.subTest(sev=sev, want=want):
@@ -421,7 +420,7 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert json.loads(buf.getvalue())["verdict"] == want
 
     def test_empty_json_plus_prose_finding_recovers(self):
-        # Codex round 29: empty JSON '{"findings":[],"verdict":"SHIP"}' followed by a
+        # empty JSON '{"findings":[],"verdict":"SHIP"}' followed by a
         # real prose finding must recover the finding, not fake clean.
         raw = ('{"findings":[],"verdict":"SHIP"}\n'
                'HIGH (confidence: HIGH) — app/auth.py:42 — auth bypass.\nVerdict: FIX FIRST\n')
@@ -432,7 +431,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert len(env["findings"]) == 1 and env["verdict"] != "SHIP"
 
     def test_empty_json_plus_fieldlist_or_table_not_clean(self):
-        # Codex round 30: empty JSON then a field-list/table finding must not be clean.
+        # empty JSON then a field-list/table finding must not be clean.
         for prose in [
             "Finding 1:\nSeverity: HIGH\nFile: app/auth.py\nLine: 42\nDefect: bug.",
             "| HIGH | app/auth.py | 42 | bug |",
@@ -446,7 +445,7 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert env["verdict"] != "SHIP" and env["exit_code"] != 0
 
     def test_all_inline_fileline_notations_parse(self):
-        # Codex round 22-31: comprehensive inline file:line notation coverage.
+        # comprehensive inline file:line notation coverage.
         for loc in [":42", ":L42", "#42", "#L42", " L42", " line 42", " line number 42"]:
             with self.subTest(loc=loc):
                 o = amb.parse_prose_findings(
@@ -454,7 +453,7 @@ class ProseRecoveryTests(unittest.TestCase):
                 assert o is not None and len(o["findings"]) == 1 and o["findings"][0]["line"] == 42
 
     def test_severity_label_variants_do_not_fake_clean(self):
-        # Codex round 25-32: any 'Severity [word]: <level>' field label -> raw.
+        # any 'Severity [word]: <level>' field label -> raw.
         for lbl in ["Severity: HIGH", "Severity level: HIGH",
                     "Severity rating: HIGH", "**Severity:** HIGH", "1. Severity: HIGH", "Severity - HIGH"]:
             with self.subTest(lbl=lbl):
@@ -467,7 +466,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert o is not None and o["findings"] == [] and o["verdict"] == "SHIP"
 
     def test_finding_heading_with_level_does_not_fake_clean(self):
-        # Codex round 33: severity in the 'Finding'/'Issue'/'Bug' heading, not a label.
+        # severity in the 'Finding'/'Issue'/'Bug' heading, not a label.
         for h in ["Finding 1: HIGH", "Issue: CRITICAL", "Bug 3 - MEDIUM", "Vulnerability: HIGH"]:
             with self.subTest(h=h):
                 assert amb.parse_prose_findings(f"{h}\nFile: a.py\nLine: 42\nVerdict: SHIP\n") is None
@@ -477,7 +476,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert o is not None and o["findings"] == [] and o["verdict"] == "SHIP"
 
     def test_no_severity_fieldlist_finding_does_not_fake_clean(self):
-        # Codex round 34: a field-list finding with Defect/File/Line but NO severity.
+        # a field-list finding with Defect/File/Line but NO severity.
         txt = ("Finding 1:\nFile: app/auth.py\nLine: 42\nDefect: missing auth check.\n"
                "Scenario: x.\nFix: require auth.\nVerdict: SHIP\n")
         assert amb.parse_prose_findings(txt) is None
@@ -503,7 +502,7 @@ class ProseRecoveryTests(unittest.TestCase):
             assert time.monotonic() - t < 10.0
 
     def test_no_severity_finding_with_scenario_field_not_clean(self):
-        # Codex round 35: a 'Finding:' heading + file:line + Scenario/Fix (no severity).
+        # a 'Finding:' heading + file:line + Scenario/Fix (no severity).
         raw = ('{"findings":[],"verdict":"SHIP"}\n'
                'Finding: app/auth.py:42 missing auth check.\n'
                'Scenario: GET /admin without login.\nFix: require auth.\nVerdict: SHIP\n')
@@ -601,7 +600,7 @@ class ProseRecoveryTests(unittest.TestCase):
             assert time.monotonic() - t < 2.5
 
     def test_high_finding_forces_non_ship_verdict(self):
-        # Codex round 2: a model-stated SHIP can't coexist with a HIGH finding.
+        # a model-stated SHIP can't coexist with a HIGH finding.
         clean = json.dumps({"findings": [{"severity": "HIGH", "confidence": "HIGH",
                                           "file": "a.py", "line": 1, "title": "bug",
                                           "defect": "d", "scenario": "s", "fix": "f"}],
@@ -610,7 +609,7 @@ class ProseRecoveryTests(unittest.TestCase):
         assert env["verdict"] == "FIX FIRST"
 
     def test_reducer_output_does_not_train_structured_ok(self):
-        # Codex: render_findings trained structured_json=True from the reducer's own
+        # render_findings trained structured_json=True from the reducer's own
         # JSON string (which carries _unparsed_chunks), even on partial coverage.
         amb._CAP_CACHE = None
         reducer_json = json.dumps({"findings": [], "verdict": "NEEDS WORK",

@@ -106,8 +106,9 @@ def rec(model="m-reason", chars=3200, in_tok=1000, **kw):
 ALL_COMMANDS = {"version", "models", "curate", "setup", "link", "cache",
                 "trust-url", "usage", "mode", "config", "settings", "doctor",
                 "use", "ask", "audit", "map", "code", "chat", "build", "agent",
-                "codex"}
-KEYED = {"use", "ask", "audit", "map", "code", "chat", "build", "agent"}
+                "serve", "claude", "codex"}
+KEYED = {"use", "ask", "audit", "map", "code", "chat", "build", "agent",
+         "serve", "claude"}
 
 
 class TestCommandRegistry(unittest.TestCase):

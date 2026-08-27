@@ -271,7 +271,7 @@ class TestH3SubMicroCostsNeverVanish(unittest.TestCase):
         self.assertNotIn("100%", text)
         self.assertNotIn("(99%)", text)
         self.assertIn("93%", text)
-        self.assertNotIn("$", text)   # no dollar figures at all (founder policy)
+        self.assertNotIn("$", text)   # no dollar figures at all
 
 
 class TestM1EstimatedRecordsSurfaced(unittest.TestCase):
@@ -318,7 +318,7 @@ class TestM2UsageJsonSchemaVersion(unittest.TestCase):
         for key in ("days", "models", "all_priced", "saved_pct",
                     "approx_ref_records", "unmetered_lanes", "note"):
             self.assertIn(key, data, key)
-        # dollar + per-token-price fields are GONE (founder policy)
+        # dollar + per-token-price fields are GONE
         for gone in ("total_est_cost", "reference_price", "frontier_cost",
                      "saved"):
             self.assertNotIn(gone, data, gone)

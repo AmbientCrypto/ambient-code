@@ -47,16 +47,27 @@ def dead_pid():
 class TestLivenessFirstPrune(unittest.TestCase):
     """H1: TTL must never prune a LIVE pid — it can still spend."""
 
-    def test_live_pid_past_ttl_is_kept_and_still_counts(self):
+    def test_live_pid_within_cap_is_kept_and_still_counts(self):
         with fleet_dir() as d:
-            # provably alive, but WAY past any TTL (patched so the test also
-            # holds on Windows, where real liveness is unknowable; real
-            # POSIX probing is covered by test_real_dead_pid_detected_on_posix)
-            seed(d, [rec(4.5, age=100000.0)])
+            # provably alive and recent (well under the max-age cap) -> kept and
+            # still counts toward the budget (patched liveness so it also holds on
+            # Windows; real POSIX probing is covered by the dead-pid test).
+            seed(d, [rec(4.5, age=100.0)])
             with patched(amb, _pid_alive=lambda pid: True), \
                     self.assertRaises(SystemExit) as cm:
                 amb._gate_amount(1.0, ns(allow_cost=False), {})
             self.assertIn("already reserved", str(cm.exception))
+
+    def test_live_pid_past_max_age_is_reclaimed(self):
+        # A reservation older than any legit gated call (past the ~90-min build
+        # hard wall, capped at _MAX_RESERVATION_AGE_S) is stale even on a live pid —
+        # bounds POSIX pid REUSE pinning a crashed job's spend forever (P0 #10).
+        with fleet_dir() as d:
+            seed(d, [rec(4.5, age=amb._MAX_RESERVATION_AGE_S + 60.0)])
+            with patched(amb, _pid_alive=lambda pid: True):
+                amb._gate_amount(1.0, ns(allow_cost=False), {})  # no exit — reclaimed
+            amb._fleet_release_all()
+            self.assertEqual(store(d), [])
 
     def test_dead_pid_pruned_even_when_fresh(self):
         with fleet_dir() as d:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ambient-code"
-version = "1.0.0"                       # keep in sync with .claude-plugin/plugin.json + bin/ambient __version__
+version = "1.1.0"                       # keep in sync with .claude-plugin/plugin.json + bin/ambient __version__
 description = "A second pair of eyes for Claude Code, on the Ambient decentralized inference network"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -19,10 +19,18 @@ Homepage = "https://github.com/AmbientCrypto/ambient-code"
 # of the source (avoids the two-divergent-copies problem). `pipx install .` works.
 [tool.setuptools]
 script-files = ["bin/ambient"]
-packages = []                           # no importable packages — disable auto-discovery
+packages = ["ambient_code"]             # the Anthropic-bridge package (stdlib-only)
 py-modules = []
 
 [tool.pytest.ini_options]
 # Canonical runner is `python3 -m unittest discover -s tests`; this only lets
 # `pytest tests/` collect despite the sibling-module imports (tests/ is a pkg).
 pythonpath = ["tests"]
+
+# Pin the lint gate to ruff's documented default rule set (pyflakes F + the
+# pycodestyle E error subset) so the CI result is deterministic and does not drift
+# with whatever ruff version `pip install ruff` resolves. These catch real problems
+# (undefined names, unused imports, syntax errors) without imposing large stylistic
+# rewrites on the existing stdlib-only code.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

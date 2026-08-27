@@ -282,13 +282,38 @@ class TestCompleteLadder(unittest.TestCase):
         amb.log_usage = self._logu
 
     def test_stall_retries_once_then_salvages_partial(self):
-        fake, calls = stream_seq(amb.StallError("s", partial="A" * 500),
+        # A NEGLIGIBLE first partial is cheap to discard -> retry fresh; the retry
+        # stalls with a SUBSTANTIAL partial, which is salvaged (P0 #4).
+        fake, calls = stream_seq(amb.StallError("s", partial="A" * 100),
                                  amb.StallError("s", partial="B" * 500))
         with patched(amb, stream_completion=fake):
             content, usage, body = amb.complete("k", "u", "m", [], ns())
-        self.assertEqual(len(calls), 2)  # one fresh retry
+        self.assertEqual(len(calls), 2)  # one fresh retry, then salvage
         self.assertTrue(content.startswith("[AMBIENT NOTE"))
         self.assertTrue(body.get("salvaged_partial"))
+        self.assertIn("B" * 500, content)
+
+    def test_substantial_first_partial_salvaged_without_retry(self):
+        # A big first partial is NOT re-billed by a fresh restart — restarting would
+        # DISCARD the paid output and bill the whole generation twice against a
+        # one-attempt reservation, so it is salvaged immediately (P0 #4).
+        fake, calls = stream_seq(amb.StallError("s", partial="A" * 500))
+        with patched(amb, stream_completion=fake):
+            content, usage, body = amb.complete("k", "u", "m", [], ns())
+        self.assertEqual(len(calls), 1)  # no retry
+        self.assertTrue(body.get("salvaged_partial"))
+        self.assertIn("A" * 500, content)
+
+    def test_reasoning_only_stall_salvaged_not_rebilled(self):
+        # A stall with a large REASONING trace but no answer text is expensive
+        # paid output — salvage it as a reasoning draft, don't retry+rebill it.
+        fake, calls = stream_seq(amb.StallError("s", partial="", reasoning="R" * 500))
+        with patched(amb, stream_completion=fake):
+            content, usage, body = amb.complete("k", "u", "m", [], ns())
+        self.assertEqual(len(calls), 1)  # NOT retried
+        self.assertTrue(body.get("salvaged_partial"))
+        self.assertIn("REASONING-ONLY", content)
+        self.assertIn("R" * 500, content)
 
     def test_hard_wall_never_restarts(self):
         fake, calls = stream_seq(

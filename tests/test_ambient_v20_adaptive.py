@@ -1,6 +1,5 @@
-"""P1 — adaptive capability core: learn per-model behavior from real outcomes,
-recover on later success, honor AMBIENT_TELEMETRY=off. See
-docs/plans/2026-07-06-stress-test-remediation.md."""
+"""adaptive capability core: learn per-model behavior from real outcomes,
+recover on later success, honor AMBIENT_TELEMETRY=off."""
 import importlib.machinery
 import importlib.util
 import os
@@ -107,7 +106,7 @@ class AdaptiveCapabilityTests(unittest.TestCase):
             self.assertEqual(mode, 0o600)
 
     def test_stale_success_does_not_mask_fresh_failures(self):
-        # Codex: [ok, fail, fail] must be 'unreliable', not 'ok' (hysteresis keyed
+        # [ok, fail, fail] must be 'unreliable', not 'ok' (hysteresis keyed
         # on the most-recent outcomes, not "any success ever").
         amb.record_cap("m", "structured_json", True)
         amb.record_cap("m", "structured_json", False)
@@ -115,7 +114,7 @@ class AdaptiveCapabilityTests(unittest.TestCase):
         self.assertEqual(amb.cap_state("m", "structured_json"), "unreliable")
 
     def test_malformed_model_entry_does_not_crash(self):
-        # Codex: a valid-JSON but structurally-wrong entry ({"m": "bad"}) must not
+        # a valid-JSON but structurally-wrong entry ({"m": "bad"}) must not
         # raise AttributeError on the audit path.
         self.store.write_text('{"m": "bad"}', encoding="utf-8")
         amb._CAP_CACHE = None
@@ -123,7 +122,7 @@ class AdaptiveCapabilityTests(unittest.TestCase):
         amb.record_cap("m", "structured_json", False)  # must not raise
 
     def test_concurrent_writers_do_not_lose_outcomes(self):
-        # Codex: unlocked read-modify-write lost outcomes. Two sequential record_cap
+        # unlocked read-modify-write lost outcomes. Two sequential record_cap
         # calls (memo refreshed each time) must both persist.
         amb.record_cap("m", "structured_json", False)
         amb.record_cap("m", "structured_json", False)

@@ -1,7 +1,6 @@
 """v1.2.0 feature regressions — Ambient Takeover mode, the env-tunable smart
 timeout, and the user-toggleable streamed progress display (2026-07-08). Pure
-stdlib unittest (the canonical CI runner has no pytest). See
-docs/plans/2026-07-08-production-hardening-and-features.md.
+stdlib unittest (the canonical CI runner has no pytest).
 
 Every test is written to FAIL if the feature were reverted:
   * TakeoverModeTests      — `ambient mode takeover` persists + surfaces as TAKEOVER.
@@ -394,7 +393,7 @@ class BuildProgressLineTests(_EnvIsolated):
 class HookTakeoverContractTests(unittest.TestCase):
     """C3 + audit fixes: the SessionStart hook injects the right contract per
     AMBIENT_DELEGATE level, detects a whitespace-formatted config exactly like the
-    CLI parser (Codex A), and emits the banner on ONE line (Codex B)."""
+    CLI parser, and emits the banner on ONE line."""
 
     def _run(self, cfg_text):
         with tempfile.TemporaryDirectory() as home:
@@ -416,7 +415,7 @@ class HookTakeoverContractTests(unittest.TestCase):
         self.assertIn("/ambient off", r.stdout)
 
     def test_whitespace_and_duplicate_config_detected(self):
-        # Codex A: the hook's sed must trim + take last-wins like the CLI parser,
+        # the hook's sed must trim + take last-wins like the CLI parser,
         # so a hand-spaced later assignment is honored.
         r = self._run("AMBIENT_DELEGATE=off\n AMBIENT_DELEGATE = takeover \n")
         self.assertIn("TAKEOVER", r.stdout)
@@ -431,7 +430,7 @@ class HookTakeoverContractTests(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "")
 
     def test_mandatory_banner_is_one_line(self):
-        # Codex B: the banner Claude must echo has to be a SINGLE line so the hook
+        # the banner Claude must echo has to be a SINGLE line so the hook
         # never teaches it to emit a line-broken banner.
         r = self._run("AMBIENT_DELEGATE=takeover\n")
         banner = [ln for ln in r.stdout.splitlines() if "Ambient Takeover ON" in ln]

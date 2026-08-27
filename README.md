@@ -74,6 +74,25 @@ cat src/**/*.py | ambient ask "Digest: per file — purpose, public API, gotchas
 Claude reads the thousand-token digest instead of the hundred-thousand-token repo,
 and reasons over it at full quality.
 
+## Run Claude Code on Ambient
+
+Run Claude Code *itself* on Ambient's open models:
+
+```bash
+ambient setup          # once — stores your key (keychain)
+ambient claude         # starts a local bridge, launches Claude Code on Ambient
+```
+
+`ambient claude` starts a loopback-only reliability **bridge** and launches a fresh
+`claude` pointed at it (`ANTHROPIC_BASE_URL`), so a whole session — subagents included —
+runs on Ambient. The bridge translates the Anthropic Messages API to Ambient's clean
+OpenAI path and, in one place, sanitizes tool-call ids (reversibly), rebuilds streaming,
+turns Ambient's opaque overflow into the `prompt is too long` signal Claude Code compacts
+on, floors per-model budgets, and paces 429 bursts. Your Ambient key never reaches Claude
+Code — only a random local token authenticates to the bridge, which injects the key
+upstream itself. `ambient claude -m <model>` sets the default model; `ambient serve` runs
+the bridge alone for a manual `ANTHROPIC_BASE_URL` setup.
+
 ## Models
 
 Ambient scales models up and down with demand — `ambient models` shows what's
@@ -108,6 +127,8 @@ ambient chat             interactive REPL — streamed replies, per-turn token r
 ambient code "task"      single-file code generation (-f context.py) · --best-of K
 ambient build "task"     plan + generate a whole file-set (manifest-first, --apply writes)
 ambient agent            interactive agentic terminal on Ambient (opencode)
+ambient claude           run Claude Code ITSELF on Ambient (starts a local bridge)
+ambient serve            run the bridge alone (advanced/manual ANTHROPIC_BASE_URL)
 ambient doctor           pinpoints key / funds / model-availability / network trouble
 ambient usage            per-model calls and tokens (--days N)
 ambient settings         every setting, its value, and how to change it

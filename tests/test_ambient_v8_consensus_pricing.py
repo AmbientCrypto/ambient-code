@@ -230,7 +230,7 @@ class TestM1PlanMatchesConsensusGate(unittest.TestCase):
         return out.getvalue(), err.getvalue(), seen
 
     def test_consensus_plan_structure_and_gate_invoked(self):
-        # The plan no longer exposes a dollar estimate (founder policy), but the
+        # The plan no longer exposes a dollar estimate, but the
         # gate must STILL be invoked with a real expected amount, and the plan
         # must carry the consensus structure.
         catalog = consensus_catalog()

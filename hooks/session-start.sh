@@ -33,6 +33,51 @@ if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -x "${CLAUDE_PLUGIN_ROOT}/bin/ambient" 
   fi
 fi
 
+# Bridge self-heal: if THIS session runs on our loopback bridge and the bridge has died,
+# relaunch it on its recorded port + token so the session keeps working. It health-checks
+# first (never spawns a duplicate) and only acts when the recorded state matches this port.
+case "${ANTHROPIC_BASE_URL:-}" in
+  http://127.0.0.1:*|http://localhost:*)
+    if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && command -v python3 >/dev/null 2>&1; then
+      python3 - <<'PY' >/dev/null 2>&1 || true
+import json, os, re, subprocess, sys, urllib.request
+base = os.environ.get("ANTHROPIC_BASE_URL", "").rstrip("/")
+m = re.match(r"http://(?:127\.0\.0\.1|localhost):(\d+)$", base)
+if not m:
+    sys.exit(0)
+port = int(m.group(1))
+try:
+    st = json.load(open(os.path.expanduser("~/.config/ambient/bridge.json")))
+except Exception:
+    sys.exit(0)
+if not isinstance(st, dict) or st.get("port") != port or not st.get("token"):
+    sys.exit(0)
+# Is OUR bridge already up? Verify IDENTITY (an authenticated /v1/models with our token),
+# not just /healthz, so a foreign listener on the port is never mistaken for ours.
+req = urllib.request.Request(base + "/v1/models", headers={"x-api-key": st["token"]})
+try:
+    with urllib.request.urlopen(req, timeout=1) as r:
+        if r.status == 200:
+            sys.exit(0)
+except Exception:
+    pass
+exe = os.path.join(os.environ.get("CLAUDE_PLUGIN_ROOT", ""), "bin", "ambient")
+if not exe.strip("/ ") or not os.path.exists(exe):
+    sys.exit(0)
+# Relaunch on the recorded port with our token. A duplicate spawn is self-correcting:
+# the loser fails to bind the port and exits.
+try:
+    subprocess.Popen([sys.executable, exe, "serve", "--port", str(port)],
+                     env=dict(os.environ, AMBIENT_BRIDGE_LOCAL_TOKEN=st["token"]),
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+except Exception:
+    pass
+PY
+    fi
+    ;;
+esac
+
 conf="$HOME/.config/ambient/env"
 [ -f "$conf" ] || exit 0
 # Last assignment wins AND key/value whitespace is trimmed, matching the CLI's

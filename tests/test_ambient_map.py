@@ -908,5 +908,34 @@ class TestMapPerItemBudget(unittest.TestCase):
                          "an explicit --max-tokens must apply to every item")
 
 
+class TestMapPartialExitCode(unittest.TestCase):
+    """A partial item's envelope exit_code must MATCH the process exit —
+    never 2-while-the-run-returned-0 under --allow-partial."""
+
+    @staticmethod
+    def _partial_complete(api_key, api_url, model, messages, args, **kw):
+        return "half an answer", {}, {"finish_reason": "length"}  # truncated -> partial
+
+    def test_allow_partial_item_exit_code_zero_matches_process(self):
+        code, out, _err = run_map(_map_args("p", stdin="one item\n",
+                                            allow_partial=True),
+                                  complete=self._partial_complete,
+                                  stdin="one item\n")
+        self.assertIsNone(code)  # process exits 0 under --allow-partial
+        env = envelopes(out)[0]
+        self.assertEqual(env["status"], "partial")   # truncation still visible
+        self.assertEqual(env["exit_code"], 0)         # ...but reconciled to the run
+
+    def test_no_allow_partial_item_exit_code_two_matches_process(self):
+        code, out, _err = run_map(_map_args("p", stdin="one item\n",
+                                            allow_partial=False),
+                                  complete=self._partial_complete,
+                                  stdin="one item\n")
+        self.assertEqual(code, amb.EXIT_PARTIAL)      # process exits 2
+        env = envelopes(out)[0]
+        self.assertEqual(env["status"], "partial")
+        self.assertEqual(env["exit_code"], amb.EXIT_PARTIAL)
+
+
 if __name__ == "__main__":
     unittest.main()

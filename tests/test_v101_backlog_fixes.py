@@ -124,7 +124,7 @@ class TestM43StreamRedactor(unittest.TestCase):
     def test_streamed_equals_redact_of_whole_at_every_split(self):
         # The strong invariant: however the provider chunks the bytes, the
         # streamed output is byte-identical to redacting the full text at once
-        # (covers escape-in-key splits — Codex's HIGH repro).
+        # (covers escape-in-key splits).
         raws = ["hi " + KEY[:5] + "\x1b[0m" + KEY[5:] + " bye",
                 "x" + KEY + "y", "a" + KEY + "b" + KEY + "c",
                 "plain \x1b[31mred\x1b[0m no key"]

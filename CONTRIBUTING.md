@@ -4,8 +4,10 @@ Thanks for helping improve `ambient-code`.
 
 ## Ground rules
 
-- The CLI is a **single stdlib-only file**: `bin/ambient`. No third-party runtime
-  dependencies — keep it that way (it must run on a clean `python3` ≥ 3.8).
+- The CLI core is `bin/ambient` (a single stdlib-only file); the reliability bridge is a
+  small stdlib-only package, `ambient_code/` (imported lazily by `bin/ambient` only for
+  `serve`/`claude`). No third-party runtime dependencies — keep it that way (it must run on
+  a clean `python3` ≥ 3.8).
 - Cross-platform: it must at least *start* on macOS, Linux, and Windows. Guard
   POSIX-only calls (`fcntl`, `os.getuid`, `os.fchmod`).
 - Never log, print, or commit an API key. Route secrets through the OS secret

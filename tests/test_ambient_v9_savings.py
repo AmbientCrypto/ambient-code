@@ -334,7 +334,7 @@ class TestUsageSavings(unittest.TestCase):
     def test_stored_ref_beats_current_default(self):
         """Historical honesty: an old record keeps the reference it was
         billed against; only ref-less records use the current default. The
-        RELATIVE % reflects both (no dollar figures — founder policy)."""
+        RELATIVE % reflects both (no dollar figures)."""
         now = int(time.time())
         records = [
             # new-style record with its own stored ref (1/1) + cost
@@ -372,7 +372,7 @@ class TestUsageSavings(unittest.TestCase):
         self.assertEqual(data["unmetered_lanes"], ["agent"])
         self.assertEqual(data["saved_pct"], 93)
         self.assertEqual(data["models"][0]["saved_pct"], 93)
-        # ...and NEVER a dollar figure or per-token price (founder policy).
+        # ...and NEVER a dollar figure or per-token price.
         # Match JSON key form ("saved": ...) so it doesn't collide with the
         # kept "saved_pct".
         blob = json.dumps(data)

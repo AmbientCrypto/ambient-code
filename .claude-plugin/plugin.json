@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "ambient-code",
   "displayName": "Ambient Code",
-  "version": "1.0.0",
-  "description": "Access frontier open-source models \u2014 GLM, Kimi K2, Qwen, and more \u2014 from inside Claude Code, over the Ambient (ambient.xyz) decentralized inference network. Adds a /ambient control panel with a sticky model picker, second-opinion code audits that Claude cross-checks, native `ambient build` file generation, and a delegate mode where Ambient writes the token-heavy code under Claude's review.",
+  "version": "1.1.0",
+  "description": "Access frontier open-source models \u2014 GLM, Kimi K2, Qwen, and more \u2014 from inside Claude Code, over the Ambient (ambient.xyz) decentralized inference network. Adds a /ambient control panel with a sticky model picker, second-opinion code audits that Claude cross-checks, native `ambient build` file generation, and a delegate mode where Ambient writes the token-heavy code under Claude's review. `ambient claude` runs Claude Code itself on Ambient through a local reliability bridge (fixes tool-call ids, streaming, overflow, and 429s).",
   "author": {
     "name": "AmbientCrypto",
     "email": "hello@ambient.xyz"
